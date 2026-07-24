@@ -19,7 +19,14 @@ sealed class ShellChunk {
     data class Exit(val code: Int) : ShellChunk()
 }
 
+private data class ShellHeader(
+    val msgId: Int,
+    val len: Int
+)
+
 object AdbShell {
+    private const val MAX_SHELL_FRAME_SIZE = 16 * 1024 * 1024 // 16 MB max frame size safety bound
+
     fun flow(stream: AdbStream): Flow<ShellChunk> = kotlinx.coroutines.flow.flow {
         val carry = Buffer()
 
@@ -28,22 +35,29 @@ object AdbShell {
             carry.write(chunk)
 
             while (carry.size >= 5) {
-                carry.peek().use { peeker ->
+                val header = carry.peek().use { peeker ->
                     val msgId = peeker.readByte().toInt() and 0xFF
                     val len = peeker.readIntLe()
+                    ShellHeader(msgId, len)
+                }
 
-                    if (carry.size < 5L + len) return@use
+                // Corrupted frame length check: throw explicit Protocol Exception to terminate stream
+                if (header.len !in 0..MAX_SHELL_FRAME_SIZE) {
+                    throw AdbException.Protocol("Invalid shell v2 payload length: ${header.len}")
+                }
 
-                    carry.skip(5)
-                    val data = carry.readByteArray(len.toLong())
+                // Incomplete frame: break parser loop to allow stream.recv() to fetch more TCP bytes
+                if (carry.size < 5L + header.len) break
 
-                    when (msgId) {
-                        1 -> emit(ShellChunk.Stdout(data.toString(Charsets.UTF_8)))
-                        2 -> emit(ShellChunk.Stderr(data.toString(Charsets.UTF_8)))
-                        3 -> {
-                            val code = data.firstOrNull()?.toInt()?.and(0xFF) ?: 0
-                            emit(ShellChunk.Exit(code))
-                        }
+                carry.skip(5)
+                val data = carry.readByteArray(header.len.toLong())
+
+                when (header.msgId) {
+                    1 -> emit(ShellChunk.Stdout(data.toString(Charsets.UTF_8)))
+                    2 -> emit(ShellChunk.Stderr(data.toString(Charsets.UTF_8)))
+                    3 -> {
+                        val code = data.firstOrNull()?.toInt()?.and(0xFF) ?: 0
+                        emit(ShellChunk.Exit(code))
                     }
                 }
             }

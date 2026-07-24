@@ -147,12 +147,18 @@ class AdbConnection private constructor(
                             streamsMutex.withLock { streams.remove(cmd.localId) }
                             AdbPacket(AdbCmd.CLSE, cmd.localId, cmd.remoteId, ByteArray(0))
                         }
+                        is StreamCmd.AbortOpen -> {
+                            streamsMutex.withLock { streams.remove(cmd.localId) }
+                            null
+                        }
                     }
-                    try {
-                        transport.send(pkt)
-                    } catch (e: Exception) {
-                        broadcastError(streams, streamsMutex, e)
-                        break
+                    if (pkt != null) {
+                        try {
+                            transport.send(pkt)
+                        } catch (e: Exception) {
+                            broadcastError(streams, streamsMutex, e)
+                            break
+                        }
                     }
                 }
             }
@@ -202,7 +208,11 @@ class AdbConnection private constructor(
                                 entry.openSignal?.complete(remoteId)
                                 entry.openSignal = null
                             }
-                            entry.flowSemaphore.release()
+                            try {
+                                entry.flowSemaphore.release()
+                            } catch (_: IllegalStateException) {
+                                // Ignore duplicate OKAY permit release for abandoned/closed streams
+                            }
                         }
                     }
                 }
@@ -248,7 +258,10 @@ class AdbConnection private constructor(
 
         val remoteId = withTimeoutOrNull(openTimeoutMs) {
             shared.openSignal!!.await()
-        } ?: throw AdbException.Timeout("Failed to open stream for '$service': timeout")
+        } ?: run {
+            sharedCmdChannel.trySend(StreamCmd.AbortOpen(localId))
+            throw AdbException.Timeout("Failed to open stream for '$service': timeout")
+        }
 
         return AdbStream(localId, remoteId, shared.dataChannel, sharedCmdChannel, shared.flowSemaphore)
     }
