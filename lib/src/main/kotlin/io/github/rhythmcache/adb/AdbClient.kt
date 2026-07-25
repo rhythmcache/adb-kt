@@ -58,6 +58,8 @@ class AdbClient private constructor(
         }
     }
 
+    val isClosed: Boolean get() = connection.isClosed
+
     override fun close() {
         connection.close()
     }

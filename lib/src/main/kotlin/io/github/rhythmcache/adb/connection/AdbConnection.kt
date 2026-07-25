@@ -47,7 +47,11 @@ class AdbConnection private constructor(
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
             scope.launch {
-                ioLoop(transport, streams, streamsMutex, sharedCmdChannel, regChannel, keyProvider, handshakeResult)
+                try {
+                    ioLoop(transport, streams, streamsMutex, sharedCmdChannel, regChannel, keyProvider, handshakeResult)
+                } finally {
+                    scope.cancel()
+                }
             }
 
             withTimeoutOrNull(handshakeTimeoutMs) {
@@ -270,6 +274,8 @@ class AdbConnection private constructor(
         open(endpoint.toSpec(), openTimeoutMs)
 
     suspend fun openShell(cmd: String): AdbStream = open("shell:$cmd")
+
+    val isClosed: Boolean get() = !scope.isActive
 
     override fun close() {
         scope.cancel()
