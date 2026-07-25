@@ -233,7 +233,18 @@ class AdbConnection private constructor(
                 AdbCmd.CLSE -> {
                     val localId = pkt.arg1
                     streamsMutex.withLock {
-                        streams.remove(localId)?.dataChannel?.close()
+                        val entry = streams.remove(localId) ?: return@withLock
+                        val openSignal = entry.openSignal
+                        entry.openSignal = null
+                        if (openSignal != null) {
+                            // Stream was never opened umm adbd rejected OPEN
+                            openSignal.completeExceptionally(
+                                AdbException.RemoteFailure("Remote closed stream before opening")
+                            )
+                        } else {
+                            // Stream was open and is now closing normally
+                            entry.dataChannel.close()
+                        }
                     }
                 }
             }
