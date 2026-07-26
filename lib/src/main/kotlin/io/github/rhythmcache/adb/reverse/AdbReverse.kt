@@ -1,15 +1,26 @@
 package io.github.rhythmcache.adb
 
 class AdbReverse internal constructor(private val connection: AdbConnection) {
-    suspend fun add(local: String, remote: String) {
+    suspend fun add(
+        local: String,
+        remote: String,
+    ) {
         val stream = connection.open("reverse:forward:$local;$remote")
-        val resp = try { stream.readToEnd().toString(Charsets.UTF_8) } finally { stream.close() }
+        val resp =
+            try {
+                stream.readToEnd().toString(Charsets.UTF_8)
+            } finally {
+                stream.close()
+            }
         if (resp.startsWith("FAIL")) {
             throw AdbException.RemoteFailure("Reverse failed: $resp")
         }
     }
 
-    suspend fun add(local: AdbEndpoint, remote: AdbEndpoint) {
+    suspend fun add(
+        local: AdbEndpoint,
+        remote: AdbEndpoint,
+    ) {
         add(local.toSpec(), remote.toSpec())
     }
 

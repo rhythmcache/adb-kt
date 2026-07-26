@@ -1,9 +1,17 @@
 package io.github.rhythmcache.adb
 
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.Closeable
 import java.security.KeyPair
 import java.security.interfaces.RSAPublicKey
@@ -12,12 +20,12 @@ import java.util.concurrent.atomic.AtomicInteger
 class AdbConnection private constructor(
     private val openChannel: Channel<StreamReg>,
     private val sharedCmdChannel: Channel<StreamCmd>,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
 ) : Closeable {
     internal data class StreamReg(
         val localId: Int,
         val service: String,
-        val shared: StreamShared
+        val shared: StreamShared,
     )
 
     companion object {
@@ -36,7 +44,7 @@ class AdbConnection private constructor(
         suspend fun connect(
             transport: PacketTransport,
             keyProvider: AdbKeyProvider,
-            handshakeTimeoutMs: Long = 30_000
+            handshakeTimeoutMs: Long = 30_000,
         ): AdbConnection {
             val sharedCmdChannel = Channel<StreamCmd>(capacity = 64)
             val regChannel = Channel<StreamReg>(capacity = 16)
@@ -64,19 +72,22 @@ class AdbConnection private constructor(
             return AdbConnection(
                 openChannel = regChannel,
                 sharedCmdChannel = sharedCmdChannel,
-                scope = scope
+                scope = scope,
             )
         }
 
         suspend fun connect(
             transport: PacketTransport,
             keyPair: KeyPair,
-            handshakeTimeoutMs: Long = 30_000
-        ): AdbConnection = connect(
-            transport,
-            object : AdbKeyProvider { override suspend fun getKeyPair(): KeyPair = keyPair },
-            handshakeTimeoutMs
-        )
+            handshakeTimeoutMs: Long = 30_000,
+        ): AdbConnection =
+            connect(
+                transport,
+                object : AdbKeyProvider {
+                    override suspend fun getKeyPair(): KeyPair = keyPair
+                },
+                handshakeTimeoutMs,
+            )
 
         private suspend fun ioLoop(
             transport: PacketTransport,
@@ -85,12 +96,13 @@ class AdbConnection private constructor(
             cmdChannel: Channel<StreamCmd>,
             regChannel: Channel<StreamReg>,
             keyProvider: AdbKeyProvider,
-            handshakeResult: CompletableDeferred<Unit>
+            handshakeResult: CompletableDeferred<Unit>,
         ) = coroutineScope {
-            val features = "host::features=shell_v2,cmd,stat_v2,ls_v2,fixed_push_mkdir," +
-                "apex,abb,fixed_push_symlink_timestamp,abb_exec,remount_shell,track_app," +
-                "sendrecv_v2,sendrecv_v2_brotli,sendrecv_v2_lz4,sendrecv_v2_zstd," +
-                "sendrecv_v2_dry_run_send,openscreen_mdns\u0000"
+            val features =
+                "host::features=shell_v2,cmd,stat_v2,ls_v2,fixed_push_mkdir," +
+                    "apex,abb,fixed_push_symlink_timestamp,abb_exec,remount_shell,track_app," +
+                    "sendrecv_v2,sendrecv_v2_brotli,sendrecv_v2_lz4,sendrecv_v2_zstd," +
+                    "sendrecv_v2_dry_run_send,openscreen_mdns\u0000"
 
             try {
                 transport.send(AdbPacket(AdbCmd.CNXN, ADB_VERSION, MAX_PAYLOAD, features.toByteArray(Charsets.US_ASCII)))
@@ -101,71 +113,76 @@ class AdbConnection private constructor(
 
             var triedSignature = false
 
-            val readerJob = launch {
-                while (isActive) {
-                    val pkt = try {
-                        transport.recv()
-                    } catch (e: Exception) {
-                        broadcastError(streams, streamsMutex, e)
-                        if (!handshakeResult.isCompleted) handshakeResult.completeExceptionally(e)
-                        break
-                    }
-                    try {
-                        dispatch(
-                            pkt,
-                            transport,
-                            streams,
-                            streamsMutex,
-                            keyProvider,
-                            triedSignature,
-                            handshakeResult
-                        ) { newVal ->
-                            triedSignature = newVal
-                        }
-                    } catch (e: Exception) {
-                        broadcastError(streams, streamsMutex, e)
-                        if (!handshakeResult.isCompleted) handshakeResult.completeExceptionally(e)
-                        break
-                    }
-                }
-            }
-
-            val regJob = launch {
-                for (reg in regChannel) {
-                    val payload = (reg.service + "\u0000").toByteArray(Charsets.UTF_8)
-                    streamsMutex.withLock { streams[reg.localId] = reg.shared }
-                    try {
-                        transport.send(AdbPacket(AdbCmd.OPEN, reg.localId, 0, payload))
-                    } catch (e: Exception) {
-                        broadcastError(streams, streamsMutex, e)
-                        break
-                    }
-                }
-            }
-
-            val cmdJob = launch {
-                for (cmd in cmdChannel) {
-                    val pkt = when (cmd) {
-                        is StreamCmd.Write -> AdbPacket(AdbCmd.WRTE, cmd.localId, cmd.remoteId, cmd.data)
-                        is StreamCmd.Close -> {
-                            streamsMutex.withLock { streams.remove(cmd.localId) }
-                            AdbPacket(AdbCmd.CLSE, cmd.localId, cmd.remoteId, ByteArray(0))
-                        }
-                        is StreamCmd.AbortOpen -> {
-                            streamsMutex.withLock { streams.remove(cmd.localId) }
-                            null
-                        }
-                    }
-                    if (pkt != null) {
+            val readerJob =
+                launch {
+                    while (isActive) {
+                        val pkt =
+                            try {
+                                transport.recv()
+                            } catch (e: Exception) {
+                                broadcastError(streams, streamsMutex, e)
+                                if (!handshakeResult.isCompleted) handshakeResult.completeExceptionally(e)
+                                break
+                            }
                         try {
-                            transport.send(pkt)
+                            dispatch(
+                                pkt,
+                                transport,
+                                streams,
+                                streamsMutex,
+                                keyProvider,
+                                triedSignature,
+                                handshakeResult,
+                            ) { newVal ->
+                                triedSignature = newVal
+                            }
+                        } catch (e: Exception) {
+                            broadcastError(streams, streamsMutex, e)
+                            if (!handshakeResult.isCompleted) handshakeResult.completeExceptionally(e)
+                            break
+                        }
+                    }
+                }
+
+            val regJob =
+                launch {
+                    for (reg in regChannel) {
+                        val payload = (reg.service + "\u0000").toByteArray(Charsets.UTF_8)
+                        streamsMutex.withLock { streams[reg.localId] = reg.shared }
+                        try {
+                            transport.send(AdbPacket(AdbCmd.OPEN, reg.localId, 0, payload))
                         } catch (e: Exception) {
                             broadcastError(streams, streamsMutex, e)
                             break
                         }
                     }
                 }
-            }
+
+            val cmdJob =
+                launch {
+                    for (cmd in cmdChannel) {
+                        val pkt =
+                            when (cmd) {
+                                is StreamCmd.Write -> AdbPacket(AdbCmd.WRTE, cmd.localId, cmd.remoteId, cmd.data)
+                                is StreamCmd.Close -> {
+                                    streamsMutex.withLock { streams.remove(cmd.localId) }
+                                    AdbPacket(AdbCmd.CLSE, cmd.localId, cmd.remoteId, ByteArray(0))
+                                }
+                                is StreamCmd.AbortOpen -> {
+                                    streamsMutex.withLock { streams.remove(cmd.localId) }
+                                    null
+                                }
+                            }
+                        if (pkt != null) {
+                            try {
+                                transport.send(pkt)
+                            } catch (e: Exception) {
+                                broadcastError(streams, streamsMutex, e)
+                                break
+                            }
+                        }
+                    }
+                }
 
             readerJob.join()
             regJob.cancel()
@@ -182,21 +199,23 @@ class AdbConnection private constructor(
             keyProvider: AdbKeyProvider,
             triedSignature: Boolean,
             handshakeResult: CompletableDeferred<Unit>,
-            setTriedSignature: (Boolean) -> Unit
+            setTriedSignature: (Boolean) -> Unit,
         ) {
             when (pkt.command) {
-                AdbCmd.AUTH -> if (pkt.arg0 == AdbAuthType.TOKEN) {
-                    val keyPair = keyProvider.getKeyPair()
-                    if (!triedSignature) {
-                        setTriedSignature(true)
-                        val sig = AdbAuth.signToken(keyPair.private, pkt.payload)
-                        transport.send(AdbPacket(AdbCmd.AUTH, AdbAuthType.SIGNATURE, 0, sig))
-                    } else {
-                        val pubKeyBytes = keyProvider.getAdbPublicKeyBytes()
-                            ?: AdbAuth.encodePublicKeyAdb(keyPair.public as RSAPublicKey)
-                        transport.send(AdbPacket(AdbCmd.AUTH, AdbAuthType.RSAPUBLICKEY, 0, pubKeyBytes))
+                AdbCmd.AUTH ->
+                    if (pkt.arg0 == AdbAuthType.TOKEN) {
+                        val keyPair = keyProvider.getKeyPair()
+                        if (!triedSignature) {
+                            setTriedSignature(true)
+                            val sig = AdbAuth.signToken(keyPair.private, pkt.payload)
+                            transport.send(AdbPacket(AdbCmd.AUTH, AdbAuthType.SIGNATURE, 0, sig))
+                        } else {
+                            val pubKeyBytes =
+                                keyProvider.getAdbPublicKeyBytes()
+                                    ?: AdbAuth.encodePublicKeyAdb(keyPair.public as RSAPublicKey)
+                            transport.send(AdbPacket(AdbCmd.AUTH, AdbAuthType.RSAPUBLICKEY, 0, pubKeyBytes))
+                        }
                     }
-                }
 
                 AdbCmd.CNXN -> {
                     if (!handshakeResult.isCompleted) handshakeResult.complete(Unit)
@@ -239,7 +258,7 @@ class AdbConnection private constructor(
                         if (openSignal != null) {
                             // Stream was never opened umm adbd rejected OPEN
                             openSignal.completeExceptionally(
-                                AdbException.RemoteFailure("Remote closed stream before opening")
+                                AdbException.RemoteFailure("Remote closed stream before opening"),
                             )
                         } else {
                             // Stream was open and is now closing normally
@@ -253,7 +272,7 @@ class AdbConnection private constructor(
         private suspend fun broadcastError(
             streams: HashMap<Int, StreamShared>,
             streamsMutex: Mutex,
-            e: Exception
+            e: Exception,
         ) {
             streamsMutex.withLock {
                 for (entry in streams.values) {
@@ -265,24 +284,30 @@ class AdbConnection private constructor(
     }
 
     /** Opens a new logical stream for the given ADB service string. */
-    suspend fun open(service: String, openTimeoutMs: Long = 10_000): AdbStream {
+    suspend fun open(
+        service: String,
+        openTimeoutMs: Long = 10_000,
+    ): AdbStream {
         val localId = nextLocalId()
         val shared = StreamShared()
 
         openChannel.send(StreamReg(localId, service, shared))
 
-        val remoteId = withTimeoutOrNull(openTimeoutMs) {
-            shared.openSignal!!.await()
-        } ?: run {
-            sharedCmdChannel.trySend(StreamCmd.AbortOpen(localId))
-            throw AdbException.Timeout("Failed to open stream for '$service': timeout")
-        }
+        val remoteId =
+            withTimeoutOrNull(openTimeoutMs) {
+                shared.openSignal!!.await()
+            } ?: run {
+                sharedCmdChannel.trySend(StreamCmd.AbortOpen(localId))
+                throw AdbException.Timeout("Failed to open stream for '$service': timeout")
+            }
 
         return AdbStream(localId, remoteId, shared.dataChannel, sharedCmdChannel, shared.flowSemaphore)
     }
 
-    suspend fun open(endpoint: AdbEndpoint, openTimeoutMs: Long = 10_000): AdbStream =
-        open(endpoint.toSpec(), openTimeoutMs)
+    suspend fun open(
+        endpoint: AdbEndpoint,
+        openTimeoutMs: Long = 10_000,
+    ): AdbStream = open(endpoint.toSpec(), openTimeoutMs)
 
     suspend fun openShell(cmd: String): AdbStream = open("shell:$cmd")
 

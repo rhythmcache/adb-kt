@@ -7,14 +7,13 @@ import java.io.OutputStream
 data class AdbFileStat(
     val mode: Int,
     val size: Int,
-    val mtime: Int
+    val mtime: Int,
 ) {
     val isFile: Boolean get() = (mode and 0x8000) != 0
     val isDirectory: Boolean get() = (mode and 0x4000) != 0
 }
 
 class AdbSync internal constructor(private val connection: AdbConnection) {
-
     suspend fun stat(remotePath: String): AdbFileStat {
         val stream = connection.open("sync:")
         try {
@@ -35,7 +34,10 @@ class AdbSync internal constructor(private val connection: AdbConnection) {
         }
     }
 
-    suspend fun pull(remotePath: String, output: OutputStream) {
+    suspend fun pull(
+        remotePath: String,
+        output: OutputStream,
+    ) {
         val stream = connection.open("sync:")
         try {
             sendReq(stream, "RECV", remotePath.toByteArray(Charsets.UTF_8))
@@ -73,7 +75,12 @@ class AdbSync internal constructor(private val connection: AdbConnection) {
         }
     }
 
-    suspend fun push(input: InputStream, remotePath: String, mode: Int = 33188, mtime: Int = (System.currentTimeMillis() / 1000).toInt()) {
+    suspend fun push(
+        input: InputStream,
+        remotePath: String,
+        mode: Int = 33188,
+        mtime: Int = (System.currentTimeMillis() / 1000).toInt(),
+    ) {
         val stream = connection.open("sync:")
         try {
             val destArg = "$remotePath,$mode".toByteArray(Charsets.UTF_8)
@@ -107,7 +114,11 @@ class AdbSync internal constructor(private val connection: AdbConnection) {
         }
     }
 
-    private suspend fun sendReq(stream: AdbStream, id: String, payload: ByteArray) {
+    private suspend fun sendReq(
+        stream: AdbStream,
+        id: String,
+        payload: ByteArray,
+    ) {
         val buf = Buffer()
         buf.writeUtf8(id)
         buf.writeIntLe(payload.size)
@@ -117,7 +128,10 @@ class AdbSync internal constructor(private val connection: AdbConnection) {
         stream.write(buf.readByteArray())
     }
 
-    private suspend fun readExactly(stream: AdbStream, count: Int): ByteArray {
+    private suspend fun readExactly(
+        stream: AdbStream,
+        count: Int,
+    ): ByteArray {
         val buf = ByteArray(count)
         stream.readFully(buf)
         return buf

@@ -4,7 +4,7 @@ import kotlinx.coroutines.flow.Flow
 import java.io.Closeable
 
 class AdbClient private constructor(
-    private val connection: AdbConnection
+    private val connection: AdbConnection,
 ) : Closeable {
     val sync: AdbSync = AdbSync(connection)
     val forward: AdbForward = AdbForward(connection)
@@ -15,7 +15,7 @@ class AdbClient private constructor(
             host: String,
             port: Int = 5555,
             keyProvider: AdbKeyProvider = MemoryKeyProvider,
-            handshakeTimeoutMs: Long = 30_000
+            handshakeTimeoutMs: Long = 30_000,
         ): AdbClient {
             val transport = TcpPacketTransport.connect(host, port)
             val connection = AdbConnection.connect(transport, keyProvider, handshakeTimeoutMs)
@@ -25,7 +25,7 @@ class AdbClient private constructor(
         suspend fun connect(
             transport: PacketTransport,
             keyProvider: AdbKeyProvider = MemoryKeyProvider,
-            handshakeTimeoutMs: Long = 30_000
+            handshakeTimeoutMs: Long = 30_000,
         ): AdbClient {
             val connection = AdbConnection.connect(transport, keyProvider, handshakeTimeoutMs)
             return AdbClient(connection)
@@ -49,14 +49,15 @@ class AdbClient private constructor(
     }
 
     /** Stream shell chunks live as a Flow. Guarantees closing stream on completion or cancellation. */
-    fun shellFlow(cmd: String): Flow<ShellChunk> = kotlinx.coroutines.flow.flow {
-        val stream = connection.open("shell,v2,raw:$cmd")
-        try {
-            AdbShell.flow(stream).collect { emit(it) }
-        } finally {
-            stream.close()
+    fun shellFlow(cmd: String): Flow<ShellChunk> =
+        kotlinx.coroutines.flow.flow {
+            val stream = connection.open("shell,v2,raw:$cmd")
+            try {
+                AdbShell.flow(stream).collect { emit(it) }
+            } finally {
+                stream.close()
+            }
         }
-    }
 
     val isClosed: Boolean get() = connection.isClosed
 

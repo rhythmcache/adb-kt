@@ -8,7 +8,6 @@ import java.security.interfaces.RSAPublicKey
 import java.util.Base64
 
 object AdbAuth {
-
     /** Generate 2048-bit RSA keypair. */
     fun generateKey(): KeyPair {
         val kpg = KeyPairGenerator.getInstance("RSA")
@@ -17,12 +16,16 @@ object AdbAuth {
     }
 
     /** Signs the 20-byte SHA1 token adbd sends during AUTH. */
-    fun signToken(privateKey: PrivateKey, token: ByteArray): ByteArray {
-        val sha1DigestInfoPrefix = byteArrayOf(
-            0x30, 0x21, 0x30, 0x09, 0x06, 0x05,
-            0x2b, 0x0e, 0x03, 0x02, 0x1a,
-            0x05, 0x00, 0x04, 0x14
-        )
+    fun signToken(
+        privateKey: PrivateKey,
+        token: ByteArray,
+    ): ByteArray {
+        val sha1DigestInfoPrefix =
+            byteArrayOf(
+                0x30, 0x21, 0x30, 0x09, 0x06, 0x05,
+                0x2b, 0x0e, 0x03, 0x02, 0x1a,
+                0x05, 0x00, 0x04, 0x14,
+            )
         val digestInfo = sha1DigestInfoPrefix + token
         val cipher = javax.crypto.Cipher.getInstance("RSA/ECB/PKCS1Padding")
         cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, privateKey)
@@ -56,7 +59,10 @@ object AdbAuth {
         return "$b64 $userHost\u0000".toByteArray(Charsets.US_ASCII)
     }
 
-    private fun writeLeU32(out: java.io.ByteArrayOutputStream, v: Int) {
+    private fun writeLeU32(
+        out: java.io.ByteArrayOutputStream,
+        v: Int,
+    ) {
         out.write(v and 0xFF)
         out.write((v ushr 8) and 0xFF)
         out.write((v ushr 16) and 0xFF)
@@ -70,13 +76,19 @@ object AdbAuth {
         return r32.subtract(inv).mod(r32).toLong().toInt()
     }
 
-    private fun computeRSquared(n: BigInteger, words: Int): BigInteger {
+    private fun computeRSquared(
+        n: BigInteger,
+        words: Int,
+    ): BigInteger {
         val bits = 64 * words
         val rSq = BigInteger.ONE.shiftLeft(bits)
         return rSq.mod(n)
     }
 
-    private fun biguintToLeU32Words(n: BigInteger, words: Int): IntArray {
+    private fun biguintToLeU32Words(
+        n: BigInteger,
+        words: Int,
+    ): IntArray {
         var bytes = n.toByteArray()
         if (bytes.isNotEmpty() && bytes[0].toInt() == 0) {
             bytes = bytes.copyOfRange(1, bytes.size)

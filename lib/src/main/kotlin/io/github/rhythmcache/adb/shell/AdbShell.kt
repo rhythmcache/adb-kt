@@ -6,7 +6,7 @@ import okio.Buffer
 data class ShellResult(
     val stdout: ByteArray,
     val stderr: ByteArray,
-    val exitCode: Int
+    val exitCode: Int,
 ) {
     val isSuccess: Boolean get() = exitCode == 0
     val stdoutText: String get() = stdout.toString(Charsets.UTF_8)
@@ -15,54 +15,58 @@ data class ShellResult(
 
 sealed class ShellChunk {
     data class Stdout(val text: String) : ShellChunk()
+
     data class Stderr(val text: String) : ShellChunk()
+
     data class Exit(val code: Int) : ShellChunk()
 }
 
 private data class ShellHeader(
     val msgId: Int,
-    val len: Int
+    val len: Int,
 )
 
 object AdbShell {
     private const val MAX_SHELL_FRAME_SIZE = 16 * 1024 * 1024 // 16 MB max frame size safety bound
 
-    fun flow(stream: AdbStream): Flow<ShellChunk> = kotlinx.coroutines.flow.flow {
-        val carry = Buffer()
+    fun flow(stream: AdbStream): Flow<ShellChunk> =
+        kotlinx.coroutines.flow.flow {
+            val carry = Buffer()
 
-        while (true) {
-            val chunk = stream.recv() ?: break
-            carry.write(chunk)
+            while (true) {
+                val chunk = stream.recv() ?: break
+                carry.write(chunk)
 
-            while (carry.size >= 5) {
-                val header = carry.peek().use { peeker ->
-                    val msgId = peeker.readByte().toInt() and 0xFF
-                    val len = peeker.readIntLe()
-                    ShellHeader(msgId, len)
-                }
+                while (carry.size >= 5) {
+                    val header =
+                        carry.peek().use { peeker ->
+                            val msgId = peeker.readByte().toInt() and 0xFF
+                            val len = peeker.readIntLe()
+                            ShellHeader(msgId, len)
+                        }
 
-                // Corrupted frame length check: throw explicit Protocol Exception to terminate stream
-                if (header.len !in 0..MAX_SHELL_FRAME_SIZE) {
-                    throw AdbException.Protocol("Invalid shell v2 payload length: ${header.len}")
-                }
+                    // Corrupted frame length check: throw explicit Protocol Exception to terminate stream
+                    if (header.len !in 0..MAX_SHELL_FRAME_SIZE) {
+                        throw AdbException.Protocol("Invalid shell v2 payload length: ${header.len}")
+                    }
 
-                // Incomplete frame: break parser loop to allow stream.recv() to fetch more TCP bytes
-                if (carry.size < 5L + header.len) break
+                    // Incomplete frame: break parser loop to allow stream.recv() to fetch more TCP bytes
+                    if (carry.size < 5L + header.len) break
 
-                carry.skip(5)
-                val data = carry.readByteArray(header.len.toLong())
+                    carry.skip(5)
+                    val data = carry.readByteArray(header.len.toLong())
 
-                when (header.msgId) {
-                    1 -> emit(ShellChunk.Stdout(data.toString(Charsets.UTF_8)))
-                    2 -> emit(ShellChunk.Stderr(data.toString(Charsets.UTF_8)))
-                    3 -> {
-                        val code = data.firstOrNull()?.toInt()?.and(0xFF) ?: 0
-                        emit(ShellChunk.Exit(code))
+                    when (header.msgId) {
+                        1 -> emit(ShellChunk.Stdout(data.toString(Charsets.UTF_8)))
+                        2 -> emit(ShellChunk.Stderr(data.toString(Charsets.UTF_8)))
+                        3 -> {
+                            val code = data.firstOrNull()?.toInt()?.and(0xFF) ?: 0
+                            emit(ShellChunk.Exit(code))
+                        }
                     }
                 }
             }
         }
-    }
 
     suspend fun collectToResult(stream: AdbStream): ShellResult {
         val stdout = java.io.ByteArrayOutputStream()

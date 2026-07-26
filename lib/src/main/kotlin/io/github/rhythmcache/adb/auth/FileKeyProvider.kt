@@ -12,9 +12,8 @@ import java.util.Base64
 
 class FileKeyProvider(
     private val keyFile: File,
-    private val pubKeyFile: File? = null
+    private val pubKeyFile: File? = null,
 ) : AdbKeyProvider {
-
     private var loadedKeyPair: KeyPair? = null
 
     override suspend fun getAdbPublicKeyBytes(): ByteArray? {
@@ -32,23 +31,25 @@ class FileKeyProvider(
                 val text = String(rawBytes, Charsets.US_ASCII)
                 val kf = KeyFactory.getInstance("RSA")
 
-                val privKey: RSAPrivateCrtKey = if (text.contains("-----BEGIN")) {
-                    val cleanBase64 = text.lines()
-                        .filter { !it.startsWith("-----") }
-                        .joinToString("")
-                        .replace("\\s".toRegex(), "")
-                    val der = Base64.getDecoder().decode(cleanBase64)
+                val privKey: RSAPrivateCrtKey =
+                    if (text.contains("-----BEGIN")) {
+                        val cleanBase64 =
+                            text.lines()
+                                .filter { !it.startsWith("-----") }
+                                .joinToString("")
+                                .replace("\\s".toRegex(), "")
+                        val der = Base64.getDecoder().decode(cleanBase64)
 
-                    if (text.contains("RSA PRIVATE KEY") || isPkcs1Der(der)) {
-                        parsePkcs1PrivateKey(der, kf)
+                        if (text.contains("RSA PRIVATE KEY") || isPkcs1Der(der)) {
+                            parsePkcs1PrivateKey(der, kf)
+                        } else {
+                            kf.generatePrivate(PKCS8EncodedKeySpec(der)) as RSAPrivateCrtKey
+                        }
+                    } else if (isPkcs1Der(rawBytes)) {
+                        parsePkcs1PrivateKey(rawBytes, kf)
                     } else {
-                        kf.generatePrivate(PKCS8EncodedKeySpec(der)) as RSAPrivateCrtKey
+                        kf.generatePrivate(PKCS8EncodedKeySpec(rawBytes)) as RSAPrivateCrtKey
                     }
-                } else if (isPkcs1Der(rawBytes)) {
-                    parsePkcs1PrivateKey(rawBytes, kf)
-                } else {
-                    kf.generatePrivate(PKCS8EncodedKeySpec(rawBytes)) as RSAPrivateCrtKey
-                }
 
                 val pubSpec = RSAPublicKeySpec(privKey.modulus, privKey.publicExponent)
                 val pubKey = kf.generatePublic(pubSpec) as RSAPublicKey
@@ -67,7 +68,8 @@ class FileKeyProvider(
             val pubBytes = AdbAuth.encodePublicKeyAdb(generated.public as RSAPublicKey)
             val targetPubFile = pubKeyFile ?: File(keyFile.parentFile, "${keyFile.name}.pub")
             targetPubFile.writeBytes(pubBytes)
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+        }
         loadedKeyPair = generated
         return generated
     }
@@ -85,7 +87,10 @@ class FileKeyProvider(
         return buf.hasRemaining() && buf.get() == 0x02.toByte() // Modulus tag 0x02
     }
 
-    private fun parsePkcs1PrivateKey(der: ByteArray, kf: KeyFactory): RSAPrivateCrtKey {
+    private fun parsePkcs1PrivateKey(
+        der: ByteArray,
+        kf: KeyFactory,
+    ): RSAPrivateCrtKey {
         val buffer = java.nio.ByteBuffer.wrap(der)
         require(buffer.get() == 0x30.toByte()) { "Invalid DER sequence" }
         readDerLength(buffer)
@@ -101,9 +106,17 @@ class FileKeyProvider(
         val exponent2 = readDerInteger(buffer)
         val coefficient = readDerInteger(buffer)
 
-        val spec = java.security.spec.RSAPrivateCrtKeySpec(
-            modulus, publicExponent, privateExponent, prime1, prime2, exponent1, exponent2, coefficient
-        )
+        val spec =
+            java.security.spec.RSAPrivateCrtKeySpec(
+                modulus,
+                publicExponent,
+                privateExponent,
+                prime1,
+                prime2,
+                exponent1,
+                exponent2,
+                coefficient,
+            )
         return kf.generatePrivate(spec) as RSAPrivateCrtKey
     }
 

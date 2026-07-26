@@ -12,11 +12,13 @@ import java.net.Socket
 class TcpPacketTransport private constructor(
     private val socket: Socket,
     private val source: BufferedSource,
-    private val sink: BufferedSink
+    private val sink: BufferedSink,
 ) : PacketTransport {
-
     companion object {
-        suspend fun connect(host: String, port: Int = 5555): TcpPacketTransport =
+        suspend fun connect(
+            host: String,
+            port: Int = 5555,
+        ): TcpPacketTransport =
             withContext(Dispatchers.IO) {
                 val socket = Socket(host, port)
                 socket.tcpNoDelay = true

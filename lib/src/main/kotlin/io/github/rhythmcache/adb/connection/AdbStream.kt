@@ -11,7 +11,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 internal sealed class StreamCmd {
     data class Write(val localId: Int, val remoteId: Int, val data: ByteArray) : StreamCmd()
+
     data class Close(val localId: Int, val remoteId: Int) : StreamCmd()
+
     data class AbortOpen(val localId: Int) : StreamCmd()
 }
 
@@ -19,7 +21,7 @@ internal class StreamShared(
     val dataChannel: Channel<Result<ByteArray>> = Channel(capacity = 64),
     var openSignal: CompletableDeferred<Int>? = CompletableDeferred(),
     val flowSemaphore: Semaphore = Semaphore(permits = 1, acquiredPermits = 1),
-    var remoteId: Int? = null
+    var remoteId: Int? = null,
 )
 
 class AdbStream internal constructor(
@@ -27,7 +29,7 @@ class AdbStream internal constructor(
     val remoteId: Int,
     private val dataChannel: Channel<Result<ByteArray>>,
     private val cmdChannel: Channel<StreamCmd>,
-    private val flowSemaphore: Semaphore
+    private val flowSemaphore: Semaphore,
 ) : Closeable {
     private val closed = AtomicBoolean(false)
     private var pending: ByteArray? = null
@@ -56,12 +58,16 @@ class AdbStream internal constructor(
         }
         return result.getOrNull()?.fold(
             onSuccess = { it },
-            onFailure = { throw AdbException.StreamClosed("ADB stream $localId error: ${it.message}") }
+            onFailure = { throw AdbException.StreamClosed("ADB stream $localId error: ${it.message}") },
         )
     }
 
     /** Reads into [target] array up to [byteCount] bytes. Returns number of bytes read, or -1 on EOF. */
-    suspend fun read(target: ByteArray, offset: Int = 0, byteCount: Int = target.size - offset): Int {
+    suspend fun read(
+        target: ByteArray,
+        offset: Int = 0,
+        byteCount: Int = target.size - offset,
+    ): Int {
         if (byteCount == 0) return 0
         if (pending == null) {
             val chunk = recv() ?: return -1
@@ -103,12 +109,13 @@ class AdbStream internal constructor(
     }
 
     /** Converts incoming stream byte chunks to Kotlin Flow. */
-    fun asFlow(): Flow<ByteArray> = flow {
-        while (true) {
-            val chunk = recv() ?: break
-            emit(chunk)
+    fun asFlow(): Flow<ByteArray> =
+        flow {
+            while (true) {
+                val chunk = recv() ?: break
+                emit(chunk)
+            }
         }
-    }
 
     /** Suspends until flow-control permit is available, then queues the write packet. */
     suspend fun write(data: ByteArray) {

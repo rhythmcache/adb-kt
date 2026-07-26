@@ -11,7 +11,7 @@ data class AdbPacket(
     val command: Int,
     val arg0: Int,
     val arg1: Int,
-    val payload: ByteArray
+    val payload: ByteArray,
 ) {
     companion object {
         fun checksum(data: ByteArray): Int {
@@ -31,17 +31,20 @@ data class AdbPacket(
                 val magic = source.readIntLe()
 
                 if ((command xor magic) != -1) {
-                    throw AdbException.Protocol("Invalid ADB packet magic (command: 0x${command.toString(16)}, magic: 0x${magic.toString(16)})")
+                    throw AdbException.Protocol(
+                        "Invalid ADB packet magic (command: 0x${command.toString(16)}, magic: 0x${magic.toString(16)})",
+                    )
                 }
 
-                val payload = if (len > 0) {
-                    if (len > MAX_PAYLOAD * 4) {
-                        throw AdbException.Protocol("ADB packet payload too large: $len bytes")
+                val payload =
+                    if (len > 0) {
+                        if (len > MAX_PAYLOAD * 4) {
+                            throw AdbException.Protocol("ADB packet payload too large: $len bytes")
+                        }
+                        source.readByteArray(len.toLong())
+                    } else {
+                        ByteArray(0)
                     }
-                    source.readByteArray(len.toLong())
-                } else {
-                    ByteArray(0)
-                }
 
                 return AdbPacket(command, arg0, arg1, payload)
             } catch (e: EOFException) {
