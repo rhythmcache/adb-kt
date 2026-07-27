@@ -1,5 +1,8 @@
 package io.github.rhythmcache.adb
 
+import io.github.rhythmcache.adb.sideload.AdbSideload
+import io.github.rhythmcache.adb.rescue.AdbRescue
+import io.github.rhythmcache.adb.install.AdbInstall
 import kotlinx.coroutines.flow.Flow
 import java.io.Closeable
 
@@ -9,6 +12,12 @@ class AdbClient private constructor(
     val sync: AdbSync = AdbSync(connection)
     val forward: AdbForward = AdbForward(connection)
     val reverse: AdbReverse = AdbReverse(connection)
+    val sideload: AdbSideload = AdbSideload(connection)
+    val rescue: AdbRescue = AdbRescue(connection)
+    val install: AdbInstall = AdbInstall(connection)
+
+    val deviceMode: AdbDeviceMode get() = connection.deviceMode
+    val bannerString: String get() = connection.bannerString
 
     companion object {
         suspend fun connect(

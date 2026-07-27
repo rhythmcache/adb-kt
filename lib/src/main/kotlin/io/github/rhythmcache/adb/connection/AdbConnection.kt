@@ -21,6 +21,8 @@ class AdbConnection private constructor(
     private val openChannel: Channel<StreamReg>,
     private val sharedCmdChannel: Channel<StreamCmd>,
     private val scope: CoroutineScope,
+    val deviceMode: AdbDeviceMode = AdbDeviceMode.UNKNOWN,
+    val bannerString: String = "",
 ) : Closeable {
     internal data class StreamReg(
         val localId: Int,
@@ -51,12 +53,25 @@ class AdbConnection private constructor(
             val streams = HashMap<Int, StreamShared>()
             val streamsMutex = Mutex()
             val handshakeResult = CompletableDeferred<Unit>()
+            var detectedMode = AdbDeviceMode.UNKNOWN
+            var detectedBanner = ""
 
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
             scope.launch {
                 try {
-                    ioLoop(transport, streams, streamsMutex, sharedCmdChannel, regChannel, keyProvider, handshakeResult)
+                    ioLoop(
+                        transport,
+                        streams,
+                        streamsMutex,
+                        sharedCmdChannel,
+                        regChannel,
+                        keyProvider,
+                        handshakeResult,
+                    ) { mode, banner ->
+                        detectedMode = mode
+                        detectedBanner = banner
+                    }
                 } finally {
                     scope.cancel()
                 }
@@ -73,6 +88,8 @@ class AdbConnection private constructor(
                 openChannel = regChannel,
                 sharedCmdChannel = sharedCmdChannel,
                 scope = scope,
+                deviceMode = detectedMode,
+                bannerString = detectedBanner,
             )
         }
 
@@ -97,6 +114,7 @@ class AdbConnection private constructor(
             regChannel: Channel<StreamReg>,
             keyProvider: AdbKeyProvider,
             handshakeResult: CompletableDeferred<Unit>,
+            onBannerReceived: (AdbDeviceMode, String) -> Unit,
         ) = coroutineScope {
             val features =
                 "host::features=shell_v2,cmd,stat_v2,ls_v2,fixed_push_mkdir," +
@@ -133,6 +151,7 @@ class AdbConnection private constructor(
                                 keyProvider,
                                 triedSignature,
                                 handshakeResult,
+                                onBannerReceived,
                             ) { newVal ->
                                 triedSignature = newVal
                             }
@@ -199,6 +218,7 @@ class AdbConnection private constructor(
             keyProvider: AdbKeyProvider,
             triedSignature: Boolean,
             handshakeResult: CompletableDeferred<Unit>,
+            onBannerReceived: (AdbDeviceMode, String) -> Unit,
             setTriedSignature: (Boolean) -> Unit,
         ) {
             when (pkt.command) {
@@ -218,6 +238,9 @@ class AdbConnection private constructor(
                     }
 
                 AdbCmd.CNXN -> {
+                    val banner = String(pkt.payload, Charsets.UTF_8)
+                    val modePrefix = banner.substringBefore("::", "")
+                    onBannerReceived(AdbDeviceMode.parse(modePrefix), banner)
                     if (!handshakeResult.isCompleted) handshakeResult.complete(Unit)
                 }
 
