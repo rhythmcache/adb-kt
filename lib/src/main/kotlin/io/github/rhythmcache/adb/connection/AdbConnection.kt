@@ -23,6 +23,7 @@ class AdbConnection private constructor(
     private val scope: CoroutineScope,
     val deviceMode: AdbDeviceMode = AdbDeviceMode.UNKNOWN,
     val bannerString: String = "",
+    val maxPayload: Int = 4096,
 ) : Closeable {
     internal data class StreamReg(
         val localId: Int,
@@ -55,6 +56,7 @@ class AdbConnection private constructor(
             val handshakeResult = CompletableDeferred<Unit>()
             var detectedMode = AdbDeviceMode.UNKNOWN
             var detectedBanner = ""
+            var detectedMaxPayload = 4096
 
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -68,9 +70,10 @@ class AdbConnection private constructor(
                         regChannel,
                         keyProvider,
                         handshakeResult,
-                    ) { mode, banner ->
+                    ) { mode, banner, payloadSize ->
                         detectedMode = mode
                         detectedBanner = banner
+                        detectedMaxPayload = payloadSize
                     }
                 } finally {
                     scope.cancel()
@@ -90,6 +93,7 @@ class AdbConnection private constructor(
                 scope = scope,
                 deviceMode = detectedMode,
                 bannerString = detectedBanner,
+                maxPayload = detectedMaxPayload,
             )
         }
 
@@ -114,7 +118,7 @@ class AdbConnection private constructor(
             regChannel: Channel<StreamReg>,
             keyProvider: AdbKeyProvider,
             handshakeResult: CompletableDeferred<Unit>,
-            onBannerReceived: (AdbDeviceMode, String) -> Unit,
+            onBannerReceived: (AdbDeviceMode, String, Int) -> Unit,
         ) = coroutineScope {
             val features =
                 "host::features=shell_v2,cmd,stat_v2,ls_v2,fixed_push_mkdir," +
@@ -218,7 +222,7 @@ class AdbConnection private constructor(
             keyProvider: AdbKeyProvider,
             triedSignature: Boolean,
             handshakeResult: CompletableDeferred<Unit>,
-            onBannerReceived: (AdbDeviceMode, String) -> Unit,
+            onBannerReceived: (AdbDeviceMode, String, Int) -> Unit,
             setTriedSignature: (Boolean) -> Unit,
         ) {
             when (pkt.command) {
@@ -240,7 +244,8 @@ class AdbConnection private constructor(
                 AdbCmd.CNXN -> {
                     val banner = String(pkt.payload, Charsets.UTF_8)
                     val modePrefix = banner.substringBefore("::", "")
-                    onBannerReceived(AdbDeviceMode.parse(modePrefix), banner)
+                    val deviceMaxPayload = if (pkt.arg1 > 0) minOf(pkt.arg1, MAX_PAYLOAD) else 4096
+                    onBannerReceived(AdbDeviceMode.parse(modePrefix), banner, deviceMaxPayload)
                     if (!handshakeResult.isCompleted) handshakeResult.complete(Unit)
                 }
 
@@ -312,7 +317,7 @@ class AdbConnection private constructor(
         openTimeoutMs: Long = 10_000,
     ): AdbStream {
         val localId = nextLocalId()
-        val shared = StreamShared()
+        val shared = StreamShared(maxPayload = maxPayload)
 
         openChannel.send(StreamReg(localId, service, shared))
 
@@ -324,7 +329,7 @@ class AdbConnection private constructor(
                 throw AdbException.Timeout("Failed to open stream for '$service': timeout")
             }
 
-        return AdbStream(localId, remoteId, shared.dataChannel, sharedCmdChannel, shared.flowSemaphore)
+        return AdbStream(localId, remoteId, shared.dataChannel, sharedCmdChannel, shared.flowSemaphore, maxPayload)
     }
 
     suspend fun open(

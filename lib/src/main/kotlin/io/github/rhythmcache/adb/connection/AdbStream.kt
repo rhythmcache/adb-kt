@@ -22,6 +22,7 @@ internal class StreamShared(
     var openSignal: CompletableDeferred<Int>? = CompletableDeferred(),
     val flowSemaphore: Semaphore = Semaphore(permits = 1, acquiredPermits = 1),
     var remoteId: Int? = null,
+    val maxPayload: Int = 4096,
 )
 
 class AdbStream internal constructor(
@@ -30,6 +31,7 @@ class AdbStream internal constructor(
     private val dataChannel: Channel<Result<ByteArray>>,
     private val cmdChannel: Channel<StreamCmd>,
     private val flowSemaphore: Semaphore,
+    private val maxPayload: Int,
 ) : Closeable {
     private val closed = AtomicBoolean(false)
     private var pending: ByteArray? = null
@@ -117,11 +119,17 @@ class AdbStream internal constructor(
             }
         }
 
-    /** Suspends until flow-control permit is available, then queues the write packet. */
+    /** Chunk write data into maxPayload packets, gated by flow-control semaphore. */
     suspend fun write(data: ByteArray) {
         check(!closed.get()) { "Cannot write to a closed stream" }
-        flowSemaphore.acquire()
-        cmdChannel.send(StreamCmd.Write(localId, remoteId, data))
+        var offset = 0
+        while (offset < data.size) {
+            val chunkSize = minOf(data.size - offset, maxPayload)
+            val chunk = if (chunkSize == data.size) data else data.copyOfRange(offset, offset + chunkSize)
+            flowSemaphore.acquire()
+            cmdChannel.send(StreamCmd.Write(localId, remoteId, chunk))
+            offset += chunkSize
+        }
     }
 
     /** Writes a UTF-8 string to the stream. */
