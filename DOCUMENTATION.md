@@ -8,15 +8,20 @@ Complete API reference and usage guide for the adb-kt Kotlin library.
 2. [Features](#2-features)
 3. [Installation](#3-installation)
 4. [Connecting to a Device](#4-connecting-to-a-device)
-5. [PacketTransport Contract](#5-packettransport-contract)
-6. [Key Authentication](#6-key-authentication)
-7. [Shell Subsystem](#7-shell-subsystem)
-8. [Sync Subsystem](#8-sync-subsystem)
-9. [Port Forwarding](#9-port-forwarding)
-10. [Reverse Port Mapping](#10-reverse-port-mapping)
-11. [Raw Streams and Endpoints](#11-raw-streams-and-endpoints)
-12. [Thread Safety and Multiplexing](#12-thread-safety-and-multiplexing)
-13. [Exception Handling](#13-exception-handling)
+5. [Device Modes and Banner Detection](#5-device-modes-and-banner-detection)
+6. [RandomAccessSource and SAF Integration](#6-randomaccesssource-and-saf-integration)
+7. [PacketTransport Contract](#7-packettransport-contract)
+8. [Key Authentication](#8-key-authentication)
+9. [Shell Subsystem](#9-shell-subsystem)
+10. [Streaming Package Installation (APKs and Split APKs)](#10-streaming-package-installation-apks-and-split-apks)
+11. [Sideloading Subsystem](#11-sideloading-subsystem)
+12. [Rescue Mode Subsystem](#12-rescue-mode-subsystem)
+13. [Sync Subsystem](#13-sync-subsystem)
+14. [Port Forwarding](#14-port-forwarding)
+15. [Reverse Port Mapping](#15-reverse-port-mapping)
+16. [Raw Streams and Endpoints](#16-raw-streams-and-endpoints)
+17. [Thread Safety and Multiplexing](#17-thread-safety-and-multiplexing)
+18. [Exception Handling](#18-exception-handling)
 
 ---
 
@@ -33,6 +38,11 @@ The core library is transport-agnostic. Only a `PacketTransport` implementation 
 - Pure Kotlin implementation with zero native binary dependencies.
 - Coroutine-first API using Kotlin Flow, Channel, Semaphore, and SupervisorJob.
 - Transport-agnostic design supporting TCP out of the box, plus custom USB, WebSocket, or Bluetooth transports.
+- Automatic device mode detection (`DEVICE`, `RECOVERY`, `SIDELOAD`, `RESCUE`, `HOST`) from initial `CNXN` banner handshakes.
+- `RandomAccessSource` API for zero-copy Android SAF (`content://` URI) and `FileDescriptor` stream integration.
+- Zero-copy streaming APK installer supporting single APKs and split APK bundles (`.apks` / `.xapk`) via `exec:cmd package`.
+- Full OTA sideloading supporting modern demand/pull `sideload-host` and legacy pre-KitKat `sideload:` protocols with progress flows.
+- Android Rescue Party subsystem supporting `rescue-install`, `rescue-getprop`, and `rescue-wipe`.
 - AOSP-compliant 2048-bit RSA key authentication with PKCS#1, PKCS#8, and binary DER support.
 - Multiplexed connection engine running concurrent shell sessions, file syncs, and custom streams over a single connection.
 - Reactive Shell v2 protocol subsystem with live Flow streaming.
@@ -118,7 +128,58 @@ AdbClient.connect(transport, keyProvider).use { client ->
 
 ---
 
-## 5. PacketTransport Contract
+## 5. Device Modes and Banner Detection
+
+When connecting to a device, `adb-kt` automatically parses the response payload banner of the `CNXN` handshake packet.
+
+### Inspecting Connection Mode
+
+```kotlin
+AdbClient.connect("192.168.1.100", 5555, keyProvider).use { client ->
+    println("Device Mode: ${client.deviceMode}") // DEVICE, RECOVERY, SIDELOAD, RESCUE, HOST, or UNKNOWN
+    println("Full Banner: ${client.bannerString}")
+}
+```
+
+### AdbDeviceMode Enum Values
+
+| Enum Value | Description |
+| :--- | :--- |
+| `AdbDeviceMode.DEVICE` | Standard running Android OS with active shell and package manager. |
+| `AdbDeviceMode.RECOVERY` | Stock or custom recovery environment (TWRP, OrangeFox, etc.). |
+| `AdbDeviceMode.SIDELOAD` | ADB Sideload mode (`minadbd`) awaiting OTA package. |
+| `AdbDeviceMode.RESCUE` | Emergency Android Rescue Party mode for fixing bootloops. |
+| `AdbDeviceMode.HOST` | Host daemon connection. |
+| `AdbDeviceMode.UNKNOWN` | Unrecognized or non-standard connection mode. |
+
+---
+
+## 6. RandomAccessSource and SAF Integration
+
+The `RandomAccessSource` interface provides positional, random-access byte reading. This is required by out-of-order block demand protocols like `sideload-host` and `rescue-install`, and allows zero-copy Android SAF (`content://` URI) reading.
+
+### Creating a RandomAccessSource
+
+```kotlin
+import io.github.rhythmcache.adb.io.RandomAccessSource
+
+// 1. From a File on disk:
+val fileSource = RandomAccessSource.of(File("/path/to/update.zip"))
+
+// 2. From an Android ParcelFileDescriptor (Storage Access Framework):
+val pfd = contentResolver.openFileDescriptor(contentUri, "r")!!
+val safSource = RandomAccessSource.of(pfd.fileDescriptor, pfd.statSize)
+
+// Wrap with .use {} to guarantee automatic closure:
+safSource.use { source ->
+    println("Source size: ${source.size} bytes")
+}
+pfd.close() // Caller maintains ownership of ParcelFileDescriptor
+```
+
+---
+
+## 7. PacketTransport Contract
 
 To implement a custom `PacketTransport` for USB, WebSockets, or Bluetooth, the implementation must meet these requirements:
 
@@ -129,7 +190,7 @@ To implement a custom `PacketTransport` for USB, WebSockets, or Bluetooth, the i
 
 ---
 
-## 6. Key Authentication
+## 8. Key Authentication
 
 `adb-kt` authentication is managed through the `AdbKeyProvider` interface.
 
@@ -159,21 +220,9 @@ AdbClient.connect("192.168.1.100", 5555, keyProvider = MemoryKeyProvider).use { 
 }
 ```
 
-### Custom Suspendable Key Provider
-
-`AdbKeyProvider` methods are suspendable, allowing integration with Android Keystore, Hardware Security Modules (HSM), or cloud vaults:
-
-```kotlin
-class AndroidKeystoreProvider : AdbKeyProvider {
-    override suspend fun getKeyPair(): KeyPair {
-        // Fetch key pair asynchronously from Android Keystore
-    }
-}
-```
-
 ---
 
-## 7. Shell Subsystem
+## 9. Shell Subsystem
 
 The Shell subsystem uses ADB Shell v2 protocol for command execution and live streaming.
 
@@ -191,20 +240,9 @@ AdbClient.connect("192.168.1.100", 5555, keyProvider).use { client ->
 }
 ```
 
-### ShellResult Properties
-
-- `stdout: ByteArray`: Raw bytes from standard output.
-- `stderr: ByteArray`: Raw bytes from standard error.
-- `exitCode: Int`: Process exit status code.
-- `isSuccess: Boolean`: Returns true if exitCode is 0.
-- `stdoutText: String`: UTF-8 decoded standard output string.
-- `stderrText: String`: UTF-8 decoded standard error string.
-
 ### Live Streaming Shell Output via Flow
 
 ```kotlin
-import kotlinx.coroutines.flow.collect
-
 AdbClient.connect("192.168.1.100", 5555, keyProvider).use { client ->
     client.shellFlow("logcat -v time").collect { chunk ->
         when (chunk) {
@@ -218,7 +256,94 @@ AdbClient.connect("192.168.1.100", 5555, keyProvider).use { client ->
 
 ---
 
-## 8. Sync Subsystem
+## 10. Streaming Package Installation (APKs and Split APKs)
+
+`client.install` streams single APKs and split APK bundles (`.apks` / `.xapk`) directly into the Package Manager via `exec:cmd package`, eliminating temporary file copies on `/data/local/tmp/`.
+
+### Installing a Single APK
+
+```kotlin
+AdbClient.connect("192.168.1.100", 5555, keyProvider).use { client ->
+    // 1. From a File:
+    client.install.install(File("app-release.apk")).collect { progress ->
+        println("Install Progress: ${progress.percentage}% - ${progress.statusText}")
+    }
+
+    // 2. From an Android SAF Uri via RandomAccessSource:
+    val pfd = contentResolver.openFileDescriptor(apkUri, "r")!!
+    val source = RandomAccessSource.of(pfd.fileDescriptor, pfd.statSize)
+    client.install.install(source, flags = listOf("-r", "-g")).collect { progress ->
+        println("Install Progress: ${progress.percentage}%")
+    }
+    pfd.close()
+}
+```
+
+### Installing Split APK Bundles (.apks / .xapk)
+
+```kotlin
+AdbClient.connect("192.168.1.100", 5555, keyProvider).use { client ->
+    val splits = listOf(
+        "base.apk" to RandomAccessSource.of(baseFile),
+        "split_config.arm64_v8a.apk" to RandomAccessSource.of(arm64File),
+        "split_config.xxhdpi.apk" to RandomAccessSource.of(densityFile)
+    )
+
+    client.install.installMultiple(splits, flags = listOf("-r")).collect { progress ->
+        println("Bundle Install: ${progress.percentage}% - ${progress.statusText}")
+    }
+}
+```
+
+---
+
+## 11. Sideloading Subsystem
+
+`client.sideload` flashes OTA update packages to devices running in Recovery or Sideload mode.
+
+### Flashing an OTA Zip
+
+```kotlin
+AdbClient.connect("192.168.1.100", 5555, keyProvider).use { client ->
+    // Sideloading a File or SAF RandomAccessSource:
+    client.sideload.sideload(File("ota_update.zip")).collect { progress ->
+        println("Sideloading: ${progress.percentage}% (${progress.bytesTransferred}/${progress.totalBytes} bytes)")
+    }
+}
+```
+
+*Note: `adb-kt` automatically tries modern demand-driven `sideload-host` block protocol first, falling back to legacy pre-KitKat `sideload:` stream protocol if necessary.*
+
+---
+
+## 12. Rescue Mode Subsystem
+
+`client.rescue` interacts with devices in Android Rescue Party mode (`rescue::...`).
+
+### Rescue Operations
+
+```kotlin
+AdbClient.connect("192.168.1.100", 5555, keyProvider).use { client ->
+    if (client.deviceMode == AdbDeviceMode.RESCUE) {
+        // 1. Fetch rescue properties
+        val fingerprint = client.rescue.getProp("ro.build.fingerprint")
+        println("Rescue Device Fingerprint: $fingerprint")
+
+        // 2. Install Rescue OTA Package
+        client.rescue.install(File("rescue_ota.zip")).collect { progress ->
+            println("Rescue Flash: ${progress.percentage}%")
+        }
+
+        // 3. Trigger User Data Wipe
+        val wipeResult = client.rescue.wipeUserdata()
+        println("Wipe Result: $wipeResult")
+    }
+}
+```
+
+---
+
+## 13. Sync Subsystem
 
 `client.sync` handles remote file inspection and streaming file transfers.
 
@@ -230,52 +355,27 @@ val stat: AdbFileStat = client.sync.stat("/sdcard/Download/file.zip")
 println("File Size: ${stat.size} bytes")
 println("Is File: ${stat.isFile}")
 println("Is Directory: ${stat.isDirectory}")
-println("Mode: ${stat.mode}")
-println("Modified Time: ${stat.mtime}")
 ```
 
 ### Pushing Files to Device (`push`)
 
-`push` accepts any `java.io.InputStream`.
-
 ```kotlin
-// Pushing from a File:
-File("app-release.apk").inputStream().use { input ->
-    client.sync.push(input, "/data/local/tmp/app-release.apk")
-}
-
-// Pushing from an Android Content URI or FileDescriptor:
-val pfd = contentResolver.openFileDescriptor(contentUri, "r")!!
-FileInputStream(pfd.fileDescriptor).use { input ->
+File("sample.pdf").inputStream().use { input ->
     client.sync.push(input, "/sdcard/Download/sample.pdf")
 }
 ```
 
 ### Pulling Files from Device (`pull`)
 
-`pull` writes to any `java.io.OutputStream`.
-
 ```kotlin
-// Pulling to a File:
 File("downloaded_log.txt").outputStream().use { output ->
     client.sync.pull("/sdcard/log.txt", output)
 }
-
-// Pulling to an Android Content URI or FileDescriptor:
-val pfd = contentResolver.openFileDescriptor(contentUri, "w")!!
-FileOutputStream(pfd.fileDescriptor).use { output ->
-    client.sync.pull("/sdcard/DCIM/photo.jpg", output)
-}
-
-// Pulling into Memory:
-val buffer = java.io.ByteArrayOutputStream()
-client.sync.pull("/data/local/tmp/status.json", buffer)
-val content = buffer.toString(Charsets.UTF_8)
 ```
 
 ---
 
-## 9. Port Forwarding
+## 14. Port Forwarding
 
 `client.forward` manages host-to-device port forwarding rules.
 
@@ -287,50 +387,32 @@ AdbClient.connect("192.168.1.100", 5555, keyProvider).use { client ->
         remote = AdbEndpoint.LocalAbstract("scrcpy")
     )
 
-    // Remove specific forward rule
     client.forward.remove(AdbEndpoint.Tcp(27183))
-
-    // Remove all forward rules
-    client.forward.removeAll()
 }
 ```
 
 ---
 
-## 10. Reverse Port Mapping
+## 15. Reverse Port Mapping
 
 `client.reverse` manages device-to-host port forwarding rules.
 
 ```kotlin
 AdbClient.connect("192.168.1.100", 5555, keyProvider).use { client ->
-    // Forward device TCP port 8080 back to host TCP port 8080
     client.reverse.add(
         local = AdbEndpoint.Tcp(8080),
         remote = AdbEndpoint.Tcp(8080)
     )
 
-    // Remove specific reverse rule
     client.reverse.remove(AdbEndpoint.Tcp(8080))
-
-    // Remove all reverse rules
-    client.reverse.removeAll()
 }
 ```
 
 ---
 
-## 11. Raw Streams and Endpoints
+## 16. Raw Streams and Endpoints
 
-`client.open()` is the universal escape hatch. It opens direct socket channels to any ADB service, including custom or non-standard daemons.
-
-### Supported Services via `client.open()`
-
-Using `client.open()`, you can interact with services such as:
-- scrcpy video and audio streams
-- JDWP Java debug sockets
-- Android Application Binary (ABB) services
-- Custom localabstract, localfilesystem, or dev sockets
-- Raw logcat streams
+`client.open()` is the universal escape hatch for raw sockets to any ADB service.
 
 ### AdbEndpoint Reference Table
 
@@ -344,31 +426,11 @@ Using `client.open()`, you can interact with services such as:
 | `AdbEndpoint.Jdwp(1234)` | `jdwp:1234` | Java Debug Wire Protocol PID |
 | `AdbEndpoint.Raw("shell,v2,raw:logcat")` | `shell,v2,raw:logcat` | Custom raw service string |
 
-### Raw Stream Usage Example
-
-```kotlin
-AdbClient.connect("192.168.1.100", 5555, keyProvider).use { client ->
-    client.open(AdbEndpoint.LocalAbstract("scrcpy")).use { stream ->
-        stream.writeUtf8("control command\n")
-
-        val chunk: ByteArray? = stream.recv()
-
-        stream.asFlow().collect { bytes ->
-            println("Received ${bytes.size} raw bytes from scrcpy stream")
-        }
-    }
-}
-```
-
 ---
 
-## 12. Thread Safety and Multiplexing
+## 17. Thread Safety and Multiplexing
 
-`AdbClient` and `AdbConnection` are thread-safe and safe to use concurrently across multiple coroutines.
-
-### How Multiplexing Works
-
-Only one underlying physical connection (TCP socket or USB interface) is opened per `AdbClient`. Multiple logical streams run concurrently over that single connection:
+`AdbClient` and `AdbConnection` are thread-safe and multiplex all concurrent coroutine operations over a single physical connection:
 
 ```text
 Single Physical Connection (TCP / USB)
@@ -376,15 +438,13 @@ Single Physical Connection (TCP / USB)
   +-- AdbConnection
        |-- Stream 1: Shell command execution
        |-- Stream 2: File sync push / pull
-       |-- Stream 3: scrcpy video stream
-       +-- Stream 4: JDWP debugger session
+       |-- Stream 3: Streaming APK installer
+       +-- Stream 4: Sideload / Rescue stream
 ```
-
-You do not need to open multiple `AdbClient` instances to run concurrent commands or transfers on the same device.
 
 ---
 
-## 13. Exception Handling
+## 18. Exception Handling
 
 All library exceptions inherit from `AdbException`.
 
@@ -398,19 +458,3 @@ All library exceptions inherit from `AdbException`.
 - `AdbException.RemoteFailure`: Error response returned by remote ADB daemon.
 - `AdbException.Io`: Low-level input or output failure.
 - `AdbException.ServerFail`: Host daemon command failure.
-
-### Example Error Handling
-
-```kotlin
-try {
-    AdbClient.connect("192.168.1.100", 5555, keyProvider).use { client ->
-        val result = client.shell("ls /root")
-    }
-} catch (e: AdbException.Authentication) {
-    println("Authentication failed: ${e.message}")
-} catch (e: AdbException.Timeout) {
-    println("Connection timed out: ${e.message}")
-} catch (e: AdbException) {
-    println("ADB Error: ${e.message}")
-}
-```
