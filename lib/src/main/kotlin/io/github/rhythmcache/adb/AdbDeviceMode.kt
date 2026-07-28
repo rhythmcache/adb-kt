@@ -6,16 +6,18 @@ enum class AdbDeviceMode {
     SIDELOAD,
     RESCUE,
     HOST,
-    UNKNOWN;
+    UNKNOWN,
+    ;
 
     companion object {
-        fun parse(type: String): AdbDeviceMode = when (type.lowercase()) {
-            "device" -> DEVICE
-            "recovery" -> RECOVERY
-            "sideload" -> SIDELOAD
-            "rescue" -> RESCUE
-            "host" -> HOST
-            else -> UNKNOWN
-        }
+        fun parse(type: String): AdbDeviceMode =
+            when (type.lowercase()) {
+                "device" -> DEVICE
+                "recovery" -> RECOVERY
+                "sideload" -> SIDELOAD
+                "rescue" -> RESCUE
+                "host" -> HOST
+                else -> UNKNOWN
+            }
     }
 }

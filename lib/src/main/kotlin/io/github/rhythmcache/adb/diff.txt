@@ -1,0 +1,328 @@
+diff --git a/lib/src/main/kotlin/io/github/rhythmcache/adb/connection/AdbConnection.kt b/lib/src/main/kotlin/io/github/rhythmcache/adb/connection/AdbConnection.kt
+index beb904d..1eabef3 100644
+--- a/lib/src/main/kotlin/io/github/rhythmcache/adb/connection/AdbConnection.kt
++++ b/lib/src/main/kotlin/io/github/rhythmcache/adb/connection/AdbConnection.kt
+@@ -186,7 +186,7 @@ class AdbConnection private constructor(
+                     for (cmd in cmdChannel) {
+                         val pkt =
+                             when (cmd) {
+-                                is StreamCmd.Write -> AdbPacket(AdbCmd.WRTE, cmd.localId, cmd.remoteId, cmd.data)
++                                is StreamCmd.Write -> AdbPacket(AdbCmd.WRTE, cmd.localId, cmd.remoteId, cmd.data, cmd.offset, cmd.length)
+                                 is StreamCmd.Close -> {
+                                     streamsMutex.withLock { streams.remove(cmd.localId) }
+                                     AdbPacket(AdbCmd.CLSE, cmd.localId, cmd.remoteId, ByteArray(0))
+diff --git a/lib/src/main/kotlin/io/github/rhythmcache/adb/connection/AdbStream.kt b/lib/src/main/kotlin/io/github/rhythmcache/adb/connection/AdbStream.kt
+index 1b55f12..39911ed 100644
+--- a/lib/src/main/kotlin/io/github/rhythmcache/adb/connection/AdbStream.kt
++++ b/lib/src/main/kotlin/io/github/rhythmcache/adb/connection/AdbStream.kt
+@@ -10,7 +10,7 @@ import java.io.EOFException
+ import java.util.concurrent.atomic.AtomicBoolean
+ 
+ internal sealed class StreamCmd {
+-    data class Write(val localId: Int, val remoteId: Int, val data: ByteArray) : StreamCmd()
++    data class Write(val localId: Int, val remoteId: Int, val data: ByteArray, val offset: Int, val length: Int) : StreamCmd()
+ 
+     data class Close(val localId: Int, val remoteId: Int) : StreamCmd()
+ 
+@@ -125,9 +125,8 @@ class AdbStream internal constructor(
+         var offset = 0
+         while (offset < data.size) {
+             val chunkSize = minOf(data.size - offset, maxPayload)
+-            val chunk = if (chunkSize == data.size) data else data.copyOfRange(offset, offset + chunkSize)
+             flowSemaphore.acquire()
+-            cmdChannel.send(StreamCmd.Write(localId, remoteId, chunk))
++            cmdChannel.send(StreamCmd.Write(localId, remoteId, data, offset, chunkSize))
+             offset += chunkSize
+         }
+     }
+diff --git a/lib/src/main/kotlin/io/github/rhythmcache/adb/protocol/AdbPacket.kt b/lib/src/main/kotlin/io/github/rhythmcache/adb/protocol/AdbPacket.kt
+index c4c7bfe..c4998fc 100644
+--- a/lib/src/main/kotlin/io/github/rhythmcache/adb/protocol/AdbPacket.kt
++++ b/lib/src/main/kotlin/io/github/rhythmcache/adb/protocol/AdbPacket.kt
+@@ -6,17 +6,22 @@ import java.io.EOFException
+ 
+ /**
+  * Wire-format ADB packet: 24-byte header + payload.
++ * [payload] may be a larger backing array; only [payloadOffset] until
++ * [payloadOffset] + [payloadLength] is considered part of this packet.
+  */
+ data class AdbPacket(
+     val command: Int,
+     val arg0: Int,
+     val arg1: Int,
+     val payload: ByteArray,
++    val payloadOffset: Int = 0,
++    val payloadLength: Int = payload.size,
+ ) {
+     companion object {
+-        fun checksum(data: ByteArray): Int {
++        fun checksum(data: ByteArray, offset: Int = 0, length: Int = data.size): Int {
+             var acc = 0
+-            for (b in data) acc += (b.toInt() and 0xFF)
++            val end = offset + length
++            for (i in offset until end) acc += (data[i].toInt() and 0xFF)
+             return acc
+         }
+ 
+@@ -59,17 +64,17 @@ data class AdbPacket(
+ 
+     /** Writes packet header and payload directly into an Okio BufferedSink. */
+     fun writeTo(sink: BufferedSink) {
+-        val chk = checksum(payload)
++        val chk = checksum(payload, payloadOffset, payloadLength)
+         val magic = command xor -1
+ 
+         sink.writeIntLe(command)
+         sink.writeIntLe(arg0)
+         sink.writeIntLe(arg1)
+-        sink.writeIntLe(payload.size)
++        sink.writeIntLe(payloadLength)
+         sink.writeIntLe(chk)
+         sink.writeIntLe(magic)
+-        if (payload.isNotEmpty()) {
+-            sink.write(payload)
++        if (payloadLength > 0) {
++            sink.write(payload, payloadOffset, payloadLength)
+         }
+         sink.flush()
+     }
+@@ -81,7 +86,10 @@ data class AdbPacket(
+         if (command != other.command) return false
+         if (arg0 != other.arg0) return false
+         if (arg1 != other.arg1) return false
+-        if (!payload.contentEquals(other.payload)) return false
++        if (payloadLength != other.payloadLength) return false
++        for (i in 0 until payloadLength) {
++            if (payload[payloadOffset + i] != other.payload[other.payloadOffset + i]) return false
++        }
+         return true
+     }
+ 
+@@ -89,7 +97,9 @@ data class AdbPacket(
+         var result = command
+         result = 31 * result + arg0
+         result = 31 * result + arg1
+-        result = 31 * result + payload.contentHashCode()
++        for (i in 0 until payloadLength) {
++            result = 31 * result + payload[payloadOffset + i]
++        }
+         return result
+     }
+-}
++}
+\ No newline at end of file
+diff --git a/lib/src/main/kotlin/io/github/rhythmcache/adb/sync/AdbSync.kt b/lib/src/main/kotlin/io/github/rhythmcache/adb/sync/AdbSync.kt
+index e4ee328..135c3cb 100644
+--- a/lib/src/main/kotlin/io/github/rhythmcache/adb/sync/AdbSync.kt
++++ b/lib/src/main/kotlin/io/github/rhythmcache/adb/sync/AdbSync.kt
+@@ -1,6 +1,9 @@
+ package io.github.rhythmcache.adb
+ 
+ import okio.Buffer
++import java.io.FileDescriptor
++import java.io.FileInputStream
++import java.io.FileOutputStream
+ import java.io.InputStream
+ import java.io.OutputStream
+ 
+@@ -14,21 +17,29 @@ data class AdbFileStat(
+ }
+ 
+ class AdbSync internal constructor(private val connection: AdbConnection) {
++
+     suspend fun stat(remotePath: String): AdbFileStat {
+         val stream = connection.open("sync:")
+         try {
+             sendReq(stream, "STAT", remotePath.toByteArray(Charsets.UTF_8))
+-            val header = readExactly(stream, 16)
+-            val buf = Buffer().write(header)
+-            val id = buf.readUtf8(4)
+-            if (id != "STAT") {
+-                throw AdbException.Protocol("Invalid STAT response ID: $id")
++            val idBytes = readExactly(stream, 4)
++            val id = String(idBytes, Charsets.US_ASCII)
++            when (id) {
++                "STAT" -> {
++                    val payload = readExactly(stream, 12)
++                    val mode = leInt(payload, 0)
++                    val size = leInt(payload, 4)
++                    val mtime = leInt(payload, 8)
++                    sendReq(stream, "QUIT", ByteArray(0))
++                    return AdbFileStat(mode, size, mtime)
++                }
++                "FAIL" -> {
++                    val len = leInt(readExactly(stream, 4))
++                    val msg = readExactly(stream, len).toString(Charsets.UTF_8)
++                    throw AdbException.RemoteFailure("Sync stat failed: $msg")
++                }
++                else -> throw AdbException.Protocol("Invalid STAT response ID: $id")
+             }
+-            val mode = buf.readIntLe()
+-            val size = buf.readIntLe()
+-            val mtime = buf.readIntLe()
+-            sendReq(stream, "QUIT", ByteArray(0))
+-            return AdbFileStat(mode, size, mtime)
+         } finally {
+             stream.close()
+         }
+@@ -37,11 +48,14 @@ class AdbSync internal constructor(private val connection: AdbConnection) {
+     suspend fun pull(
+         remotePath: String,
+         output: OutputStream,
++        onProgress: ((bytesDone: Long) -> Unit)? = null,
+     ) {
+         val stream = connection.open("sync:")
+         try {
+             sendReq(stream, "RECV", remotePath.toByteArray(Charsets.UTF_8))
+             val carry = Buffer()
++            var totalDone = 0L
++            val tmp = ByteArray(8192)
+             while (true) {
+                 while (carry.size < 8) {
+                     val chunk = stream.recv() ?: throw AdbException.Protocol("Unexpected EOF during sync pull")
+@@ -53,7 +67,7 @@ class AdbSync internal constructor(private val connection: AdbConnection) {
+                     break
+                 } else if (id == "FAIL") {
+                     while (carry.size < len) {
+-                        val chunk = stream.recv() ?: break
++                        val chunk = stream.recv() ?: throw AdbException.Protocol("Unexpected EOF while reading FAIL message")
+                         carry.write(chunk)
+                     }
+                     val msg = carry.readUtf8(len.toLong())
+@@ -63,8 +77,15 @@ class AdbSync internal constructor(private val connection: AdbConnection) {
+                         val chunk = stream.recv() ?: throw AdbException.Protocol("Unexpected EOF in sync DATA block")
+                         carry.write(chunk)
+                     }
+-                    val data = carry.readByteArray(len.toLong())
+-                    output.write(data)
++                    var remaining = len.toLong()
++                    while (remaining > 0) {
++                        val n = carry.read(tmp, 0, minOf(tmp.size.toLong(), remaining).toInt())
++                        if (n == -1) throw AdbException.Protocol("Unexpected EOF copying sync DATA block")
++                        output.write(tmp, 0, n)
++                        remaining -= n
++                        totalDone += n
++                        onProgress?.invoke(totalDone)
++                    }
+                 } else {
+                     throw AdbException.Protocol("Unexpected sync pull tag: $id")
+                 }
+@@ -75,11 +96,20 @@ class AdbSync internal constructor(private val connection: AdbConnection) {
+         }
+     }
+ 
++    suspend fun pull(
++        remotePath: String,
++        fd: FileDescriptor,
++        onProgress: ((bytesDone: Long) -> Unit)? = null,
++    ) {
++        FileOutputStream(fd).use { pull(remotePath, it, onProgress) }
++    }
++
+     suspend fun push(
+         input: InputStream,
+         remotePath: String,
+         mode: Int = 33188,
+         mtime: Int = (System.currentTimeMillis() / 1000).toInt(),
++        onProgress: ((bytesDone: Long) -> Unit)? = null,
+     ) {
+         val stream = connection.open("sync:")
+         try {
+@@ -88,9 +118,11 @@ class AdbSync internal constructor(private val connection: AdbConnection) {
+ 
+             val buffer = ByteArray(64 * 1024)
+             var bytesRead: Int
++            var totalDone = 0L
+             while (input.read(buffer).also { bytesRead = it } != -1) {
+-                val chunk = buffer.copyOf(bytesRead)
+-                sendReq(stream, "DATA", chunk)
++                sendData(stream, buffer, bytesRead)
++                totalDone += bytesRead
++                onProgress?.invoke(totalDone)
+             }
+ 
+             val doneBuf = Buffer()
+@@ -103,8 +135,8 @@ class AdbSync internal constructor(private val connection: AdbConnection) {
+             val id = respBuf.readUtf8(4)
+             val len = respBuf.readIntLe()
+             if (id == "FAIL") {
+-                val msgBytes = readExactly(stream, len)
+-                throw AdbException.RemoteFailure("Sync push failed: ${msgBytes.toString(Charsets.UTF_8)}")
++                val msg = readExactly(stream, len).toString(Charsets.UTF_8)
++                throw AdbException.RemoteFailure("Sync push failed: $msg")
+             } else if (id != "OKAY") {
+                 throw AdbException.Protocol("Unexpected sync push response: $id")
+             }
+@@ -114,18 +146,54 @@ class AdbSync internal constructor(private val connection: AdbConnection) {
+         }
+     }
+ 
++    suspend fun push(
++        fd: FileDescriptor,
++        remotePath: String,
++        mode: Int = 33188,
++        mtime: Int = (System.currentTimeMillis() / 1000).toInt(),
++        onProgress: ((bytesDone: Long) -> Unit)? = null,
++    ) {
++        FileInputStream(fd).use { push(it, remotePath, mode, mtime, onProgress) }
++    }
++
+     private suspend fun sendReq(
+         stream: AdbStream,
+         id: String,
+         payload: ByteArray,
+     ) {
+-        val buf = Buffer()
+-        buf.writeUtf8(id)
+-        buf.writeIntLe(payload.size)
++        val packet = ByteArray(8 + payload.size)
++        packet[0] = id[0].code.toByte()
++        packet[1] = id[1].code.toByte()
++        packet[2] = id[2].code.toByte()
++        packet[3] = id[3].code.toByte()
++        val len = payload.size
++        packet[4] = (len and 0xFF).toByte()
++        packet[5] = ((len shr 8) and 0xFF).toByte()
++        packet[6] = ((len shr 16) and 0xFF).toByte()
++        packet[7] = ((len shr 24) and 0xFF).toByte()
+         if (payload.isNotEmpty()) {
+-            buf.write(payload)
++            payload.copyInto(packet, 8)
+         }
+-        stream.write(buf.readByteArray())
++        stream.write(packet)
++    }
++
++    /** Writes a DATA header + [length] bytes from [buffer] without copying [buffer] itself. */
++    private suspend fun sendData(
++        stream: AdbStream,
++        buffer: ByteArray,
++        length: Int,
++    ) {
++        val packet = ByteArray(8 + length)
++        packet[0] = 'D'.code.toByte()
++        packet[1] = 'A'.code.toByte()
++        packet[2] = 'T'.code.toByte()
++        packet[3] = 'A'.code.toByte()
++        packet[4] = (length and 0xFF).toByte()
++        packet[5] = ((length shr 8) and 0xFF).toByte()
++        packet[6] = ((length shr 16) and 0xFF).toByte()
++        packet[7] = ((length shr 24) and 0xFF).toByte()
++        buffer.copyInto(packet, 8, 0, length)
++        stream.write(packet)
+     }
+ 
+     private suspend fun readExactly(
+@@ -136,4 +204,10 @@ class AdbSync internal constructor(private val connection: AdbConnection) {
+         stream.readFully(buf)
+         return buf
+     }
+-}
++
++    private fun leInt(b: ByteArray, offset: Int = 0): Int =
++        (b[offset].toInt() and 0xFF) or
++        ((b[offset + 1].toInt() and 0xFF) shl 8) or
++        ((b[offset + 2].toInt() and 0xFF) shl 16) or
++        ((b[offset + 3].toInt() and 0xFF) shl 24)
++}
+\ No newline at end of file

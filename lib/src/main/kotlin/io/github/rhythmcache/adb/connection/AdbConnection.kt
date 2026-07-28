@@ -186,7 +186,7 @@ class AdbConnection private constructor(
                     for (cmd in cmdChannel) {
                         val pkt =
                             when (cmd) {
-                                is StreamCmd.Write -> AdbPacket(AdbCmd.WRTE, cmd.localId, cmd.remoteId, cmd.data)
+                                is StreamCmd.Write -> AdbPacket(AdbCmd.WRTE, cmd.localId, cmd.remoteId, cmd.data, cmd.offset, cmd.length)
                                 is StreamCmd.Close -> {
                                     streamsMutex.withLock { streams.remove(cmd.localId) }
                                     AdbPacket(AdbCmd.CLSE, cmd.localId, cmd.remoteId, ByteArray(0))

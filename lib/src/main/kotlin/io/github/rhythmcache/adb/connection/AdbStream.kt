@@ -10,7 +10,7 @@ import java.io.EOFException
 import java.util.concurrent.atomic.AtomicBoolean
 
 internal sealed class StreamCmd {
-    data class Write(val localId: Int, val remoteId: Int, val data: ByteArray) : StreamCmd()
+    data class Write(val localId: Int, val remoteId: Int, val data: ByteArray, val offset: Int, val length: Int) : StreamCmd()
 
     data class Close(val localId: Int, val remoteId: Int) : StreamCmd()
 
@@ -125,9 +125,8 @@ class AdbStream internal constructor(
         var offset = 0
         while (offset < data.size) {
             val chunkSize = minOf(data.size - offset, maxPayload)
-            val chunk = if (chunkSize == data.size) data else data.copyOfRange(offset, offset + chunkSize)
             flowSemaphore.acquire()
-            cmdChannel.send(StreamCmd.Write(localId, remoteId, chunk))
+            cmdChannel.send(StreamCmd.Write(localId, remoteId, data, offset, chunkSize))
             offset += chunkSize
         }
     }

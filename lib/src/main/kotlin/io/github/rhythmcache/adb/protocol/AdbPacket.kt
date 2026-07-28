@@ -6,17 +6,26 @@ import java.io.EOFException
 
 /**
  * Wire-format ADB packet: 24-byte header + payload.
+ * [payload] may be a larger backing array; only [payloadOffset] until
+ * [payloadOffset] + [payloadLength] is considered part of this packet.
  */
 data class AdbPacket(
     val command: Int,
     val arg0: Int,
     val arg1: Int,
     val payload: ByteArray,
+    val payloadOffset: Int = 0,
+    val payloadLength: Int = payload.size,
 ) {
     companion object {
-        fun checksum(data: ByteArray): Int {
+        fun checksum(
+            data: ByteArray,
+            offset: Int = 0,
+            length: Int = data.size,
+        ): Int {
             var acc = 0
-            for (b in data) acc += (b.toInt() and 0xFF)
+            val end = offset + length
+            for (i in offset until end) acc += (data[i].toInt() and 0xFF)
             return acc
         }
 
@@ -59,17 +68,17 @@ data class AdbPacket(
 
     /** Writes packet header and payload directly into an Okio BufferedSink. */
     fun writeTo(sink: BufferedSink) {
-        val chk = checksum(payload)
+        val chk = checksum(payload, payloadOffset, payloadLength)
         val magic = command xor -1
 
         sink.writeIntLe(command)
         sink.writeIntLe(arg0)
         sink.writeIntLe(arg1)
-        sink.writeIntLe(payload.size)
+        sink.writeIntLe(payloadLength)
         sink.writeIntLe(chk)
         sink.writeIntLe(magic)
-        if (payload.isNotEmpty()) {
-            sink.write(payload)
+        if (payloadLength > 0) {
+            sink.write(payload, payloadOffset, payloadLength)
         }
         sink.flush()
     }
@@ -81,7 +90,10 @@ data class AdbPacket(
         if (command != other.command) return false
         if (arg0 != other.arg0) return false
         if (arg1 != other.arg1) return false
-        if (!payload.contentEquals(other.payload)) return false
+        if (payloadLength != other.payloadLength) return false
+        for (i in 0 until payloadLength) {
+            if (payload[payloadOffset + i] != other.payload[other.payloadOffset + i]) return false
+        }
         return true
     }
 
@@ -89,7 +101,9 @@ data class AdbPacket(
         var result = command
         result = 31 * result + arg0
         result = 31 * result + arg1
-        result = 31 * result + payload.contentHashCode()
+        for (i in 0 until payloadLength) {
+            result = 31 * result + payload[payloadOffset + i]
+        }
         return result
     }
 }

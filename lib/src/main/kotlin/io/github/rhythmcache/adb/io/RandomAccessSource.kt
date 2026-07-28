@@ -24,34 +24,55 @@ interface RandomAccessSource : Closeable {
     val size: Long
 
     /** Reads exactly [length] bytes starting at [offset] into [buffer] (from index 0). */
-    fun readFullyAt(offset: Long, buffer: ByteArray, length: Int)
+    fun readFullyAt(
+        offset: Long,
+        buffer: ByteArray,
+        length: Int,
+    )
 
     companion object {
-        fun of(file: File): RandomAccessSource = object : RandomAccessSource {
-            private val raf = RandomAccessFile(file, "r")
-            override val size: Long = raf.length()
-            override fun readFullyAt(offset: Long, buffer: ByteArray, length: Int) {
-                raf.seek(offset)
-                raf.readFully(buffer, 0, length)
-            }
-            override fun close() = raf.close()
-        }
+        fun of(file: File): RandomAccessSource =
+            object : RandomAccessSource {
+                private val raf = RandomAccessFile(file, "r")
+                override val size: Long = raf.length()
 
-        fun of(fd: FileDescriptor, knownSize: Long): RandomAccessSource = object : RandomAccessSource {
-            private val channel: FileChannel = FileInputStream(fd).channel
-            override val size: Long = knownSize
-            override fun readFullyAt(offset: Long, buffer: ByteArray, length: Int) {
-                val bb = ByteBuffer.wrap(buffer, 0, length)
-                var pos = offset
-                var remaining = length
-                while (remaining > 0) {
-                    val read = channel.read(bb, pos)
-                    if (read < 0) throw EOFException("Unexpected EOF at offset $pos")
-                    pos += read
-                    remaining -= read
+                override fun readFullyAt(
+                    offset: Long,
+                    buffer: ByteArray,
+                    length: Int,
+                ) {
+                    raf.seek(offset)
+                    raf.readFully(buffer, 0, length)
                 }
+
+                override fun close() = raf.close()
             }
-            override fun close() = channel.close()
-        }
+
+        fun of(
+            fd: FileDescriptor,
+            knownSize: Long,
+        ): RandomAccessSource =
+            object : RandomAccessSource {
+                private val channel: FileChannel = FileInputStream(fd).channel
+                override val size: Long = knownSize
+
+                override fun readFullyAt(
+                    offset: Long,
+                    buffer: ByteArray,
+                    length: Int,
+                ) {
+                    val bb = ByteBuffer.wrap(buffer, 0, length)
+                    var pos = offset
+                    var remaining = length
+                    while (remaining > 0) {
+                        val read = channel.read(bb, pos)
+                        if (read < 0) throw EOFException("Unexpected EOF at offset $pos")
+                        pos += read
+                        remaining -= read
+                    }
+                }
+
+                override fun close() = channel.close()
+            }
     }
 }
