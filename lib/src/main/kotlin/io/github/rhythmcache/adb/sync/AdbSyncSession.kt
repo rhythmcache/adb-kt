@@ -15,15 +15,26 @@ import java.io.OutputStream
 
 data class AdbFileStat(
     val mode: Int,
-    val size: Int,
-    val mtime: Int,
+    val rawSize: Long,
+    val mtime: Long,
+    val error: Int = 0,
+    val dev: Long = 0L,
+    val ino: Long = 0L,
+    val nlink: Int = 0,
+    val uid: Int = 0,
+    val gid: Int = 0,
+    val atime: Long = 0L,
+    val ctime: Long = 0L,
 ) {
     val isFile: Boolean get() = (mode and 0x8000) != 0
     val isDirectory: Boolean get() = (mode and 0x4000) != 0
+
+    val size: Long get() = rawSize
 }
 
 class AdbSyncSession internal constructor(
     private val stream: AdbStream,
+    private val haveStatV2: Boolean = false,
 ) : Closeable {
     private val mutex = Mutex()
     private var finished = false
@@ -32,10 +43,18 @@ class AdbSyncSession internal constructor(
         check(!finished) { "Sync session already finished" }
     }
 
-    suspend fun stat(remotePath: String): AdbFileStat =
+    suspend fun stat(remotePath: String, followSymlinks: Boolean = false): AdbFileStat =
         mutex.withLock {
             checkOpen()
-            sendReq(stream, "STAT", remotePath.toByteArray(Charsets.UTF_8))
+            val idToSend = if (haveStatV2) {
+                if (followSymlinks) "STA2" else "LST2"
+            } else {
+                if (followSymlinks) {
+                    throw UnsupportedOperationException("STAT V2 (following symlinks) is not supported by the remote device")
+                }
+                "STAT"
+            }
+            sendReq(stream, idToSend, remotePath.toByteArray(Charsets.UTF_8))
             val idBytes = readExactly(stream, 4)
             val id = String(idBytes, Charsets.US_ASCII)
             when (id) {
@@ -43,9 +62,29 @@ class AdbSyncSession internal constructor(
                     val payload = readExactly(stream, 12)
                     AdbFileStat(
                         mode = leInt(payload, 0),
-                        size = leInt(payload, 4),
-                        mtime = leInt(payload, 8),
+                        rawSize = leInt(payload, 4).toLong() and 0xFFFFFFFFL,
+                        mtime = leInt(payload, 8).toLong() and 0xFFFFFFFFL,
                     )
+                }
+                "STA2", "LST2" -> {
+                    val payload = readExactly(stream, 68)
+                    val stat = AdbFileStat(
+                        error = leInt(payload, 0),
+                        dev = leLong(payload, 4),
+                        ino = leLong(payload, 12),
+                        mode = leInt(payload, 20),
+                        nlink = leInt(payload, 24),
+                        uid = leInt(payload, 28),
+                        gid = leInt(payload, 32),
+                        rawSize = leLong(payload, 36),
+                        atime = leLong(payload, 44),
+                        mtime = leLong(payload, 52),
+                        ctime = leLong(payload, 60),
+                    )
+                    if (stat.error != 0) {
+                        throw AdbException.RemoteFailure("Sync stat (v2) failed with errno ${stat.error}")
+                    }
+                    stat
                 }
                 "FAIL" -> {
                     val len = leInt(readExactly(stream, 4))
@@ -233,6 +272,19 @@ class AdbSyncSession internal constructor(
             ((b[offset + 2].toInt() and 0xFF) shl 16) or
             ((b[offset + 3].toInt() and 0xFF) shl 24)
 
+    private fun leLong(
+        b: ByteArray,
+        offset: Int = 0,
+    ): Long =
+        (b[offset].toLong() and 0xFFL) or
+            ((b[offset + 1].toLong() and 0xFFL) shl 8) or
+            ((b[offset + 2].toLong() and 0xFFL) shl 16) or
+            ((b[offset + 3].toLong() and 0xFFL) shl 24) or
+            ((b[offset + 4].toLong() and 0xFFL) shl 32) or
+            ((b[offset + 5].toLong() and 0xFFL) shl 40) or
+            ((b[offset + 6].toLong() and 0xFFL) shl 48) or
+            ((b[offset + 7].toLong() and 0xFFL) shl 56)
+
     private fun writeLeInt(
         b: ByteArray,
         offset: Int,
@@ -251,7 +303,9 @@ class AdbSyncSession internal constructor(
 
 suspend fun AdbConnection.openSync(): AdbSyncSession {
     val stream = open("sync:")
-    return AdbSyncSession(stream)
+    val features = bannerString.substringAfter("features=", "").substringBefore(";").split(",")
+    val haveStatV2 = "stat_v2" in features
+    return AdbSyncSession(stream, haveStatV2)
 }
 
 suspend fun <T> AdbConnection.withSync(block: suspend (AdbSyncSession) -> T): T {
