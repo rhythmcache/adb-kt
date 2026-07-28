@@ -119,14 +119,21 @@ class AdbStream internal constructor(
             }
         }
 
-    /** Chunk write data into maxPayload packets, gated by flow-control semaphore. */
+    /**
+     * Writes [data] to the stream, chunked into maxPayload-sized packets.
+     *
+     * Takes ownership of [data]: the caller must not mutate it after calling this,
+     * as it may be copied but referenced asynchronously by queued write commands
+     * that haven't yet been serialized to the wire.
+     */
     suspend fun write(data: ByteArray) {
         check(!closed.get()) { "Cannot write to a closed stream" }
+        val stable = data.copyOf()
         var offset = 0
-        while (offset < data.size) {
-            val chunkSize = minOf(data.size - offset, maxPayload)
+        while (offset < stable.size) {
+            val chunkSize = minOf(stable.size - offset, maxPayload)
             flowSemaphore.acquire()
-            cmdChannel.send(StreamCmd.Write(localId, remoteId, data, offset, chunkSize))
+            cmdChannel.send(StreamCmd.Write(localId, remoteId, stable, offset, chunkSize))
             offset += chunkSize
         }
     }
