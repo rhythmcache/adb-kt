@@ -3,6 +3,7 @@ package io.github.rhythmcache.adb
 import io.github.rhythmcache.adb.install.AdbInstall
 import io.github.rhythmcache.adb.rescue.AdbRescue
 import io.github.rhythmcache.adb.sideload.AdbSideload
+import io.github.rhythmcache.adb.sync.AdbSync
 import kotlinx.coroutines.flow.Flow
 import java.io.Closeable
 
