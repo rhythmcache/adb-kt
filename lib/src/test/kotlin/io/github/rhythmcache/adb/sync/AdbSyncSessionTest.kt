@@ -5,7 +5,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AdbSyncSessionTest {
-
     @Test
     fun `stat_v2 detected from device banner with semicolons`() {
         val banner = "device::ro.product.name=foo;ro.product.model=bar;ro.product.device=baz;features=stat_v2,shell_v2,cmd"

@@ -43,17 +43,21 @@ class AdbSyncSession internal constructor(
         check(!finished) { "Sync session already finished" }
     }
 
-    suspend fun stat(remotePath: String, followSymlinks: Boolean = false): AdbFileStat =
+    suspend fun stat(
+        remotePath: String,
+        followSymlinks: Boolean = false,
+    ): AdbFileStat =
         mutex.withLock {
             checkOpen()
-            val idToSend = if (haveStatV2) {
-                if (followSymlinks) "STA2" else "LST2"
-            } else {
-                if (followSymlinks) {
-                    throw UnsupportedOperationException("STAT V2 (following symlinks) is not supported by the remote device")
+            val idToSend =
+                if (haveStatV2) {
+                    if (followSymlinks) "STA2" else "LST2"
+                } else {
+                    if (followSymlinks) {
+                        throw UnsupportedOperationException("STAT V2 (following symlinks) is not supported by the remote device")
+                    }
+                    "STAT"
                 }
-                "STAT"
-            }
             sendReq(stream, idToSend, remotePath.toByteArray(Charsets.UTF_8))
             val idBytes = readExactly(stream, 4)
             val id = String(idBytes, Charsets.US_ASCII)
@@ -68,19 +72,20 @@ class AdbSyncSession internal constructor(
                 }
                 "STA2", "LST2" -> {
                     val payload = readExactly(stream, 68)
-                    val stat = AdbFileStat(
-                        error = leInt(payload, 0),
-                        dev = leLong(payload, 4),
-                        ino = leLong(payload, 12),
-                        mode = leInt(payload, 20),
-                        nlink = leInt(payload, 24),
-                        uid = leInt(payload, 28),
-                        gid = leInt(payload, 32),
-                        rawSize = leLong(payload, 36),
-                        atime = leLong(payload, 44),
-                        mtime = leLong(payload, 52),
-                        ctime = leLong(payload, 60),
-                    )
+                    val stat =
+                        AdbFileStat(
+                            error = leInt(payload, 0),
+                            dev = leLong(payload, 4),
+                            ino = leLong(payload, 12),
+                            mode = leInt(payload, 20),
+                            nlink = leInt(payload, 24),
+                            uid = leInt(payload, 28),
+                            gid = leInt(payload, 32),
+                            rawSize = leLong(payload, 36),
+                            atime = leLong(payload, 44),
+                            mtime = leLong(payload, 52),
+                            ctime = leLong(payload, 60),
+                        )
                     if (stat.error != 0) {
                         throw AdbException.RemoteFailure("Sync stat (v2) failed with errno ${stat.error}")
                     }
