@@ -9,18 +9,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import java.io.EOFException
 import java.io.File
 
 class AdbRescue(private val connection: AdbConnection) {
-    /** Convenience overload for plain File */
     fun install(
         file: File,
         blockSize: Int = AdbSideload.DEFAULT_BLOCK_SIZE,
     ): Flow<SideloadProgress> = install(RandomAccessSource.of(file), blockSize)
 
-    /**
-     * Install a rescue OTA package over the ADB rescue service using a [RandomAccessSource].
-     */
     fun install(
         source: RandomAccessSource,
         blockSize: Int = AdbSideload.DEFAULT_BLOCK_SIZE,
@@ -33,16 +30,21 @@ class AdbRescue(private val connection: AdbConnection) {
             source.use {
                 try {
                     var bytesTransferred = 0L
+                    val reqBuf = ByteArray(8)
                     while (true) {
-                        val reqBytes = stream.recv() ?: break
-                        val reqStr = String(reqBytes, Charsets.UTF_8).trim()
+                        try {
+                            stream.readFully(reqBuf)
+                        } catch (_: EOFException) {
+                            break
+                        }
+                        val reqStr = String(reqBuf, Charsets.UTF_8)
 
-                        if (reqStr.startsWith("DONEDONE") || reqStr.startsWith("OKAYOKAY")) {
+                        if (reqStr == "DONEDONE") {
                             emit(SideloadProgress(fileSize, fileSize, 100f))
                             break
                         }
-                        if (reqStr.startsWith("FAILFAIL")) {
-                            throw AdbException.Protocol("Device reported rescue install failure: $reqStr")
+                        if (reqStr == "FAILFAIL") {
+                            throw AdbException.Protocol("Device reported rescue install failure")
                         }
 
                         val blockNum =
@@ -68,9 +70,6 @@ class AdbRescue(private val connection: AdbConnection) {
             }
         }.flowOn(Dispatchers.IO)
 
-    /**
-     * Get a property from a device in rescue mode.
-     */
     suspend fun getProp(prop: String = ""): String {
         val service = if (prop.isBlank()) "rescue-getprop:" else "rescue-getprop:$prop"
         val stream = connection.open(service)
@@ -82,9 +81,6 @@ class AdbRescue(private val connection: AdbConnection) {
         }
     }
 
-    /**
-     * Trigger a user data wipe in rescue mode.
-     */
     suspend fun wipeUserdata(): String {
         val stream = connection.open("rescue-wipe:userdata:0")
         return try {

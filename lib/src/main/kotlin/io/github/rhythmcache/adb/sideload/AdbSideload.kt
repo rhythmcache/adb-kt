@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import java.io.EOFException
 import java.io.File
 
 data class SideloadProgress(
@@ -51,16 +52,21 @@ class AdbSideload(private val connection: AdbConnection) {
                     // Modern sideload-host block demand protocol
                     try {
                         var bytesTransferred = 0L
+                        val reqBuf = ByteArray(8)
                         while (true) {
-                            val reqBytes = hostStream.recv() ?: break
-                            val reqStr = String(reqBytes, Charsets.UTF_8).trim()
+                            try {
+                                hostStream.readFully(reqBuf)
+                            } catch (_: EOFException) {
+                                break
+                            }
+                            val reqStr = String(reqBuf, Charsets.UTF_8)
 
-                            if (reqStr.startsWith("DONEDONE") || reqStr.startsWith("OKAYOKAY")) {
+                            if (reqStr == "DONEDONE") {
                                 emit(SideloadProgress(fileSize, fileSize, 100f))
                                 break
                             }
-                            if (reqStr.startsWith("FAILFAIL")) {
-                                throw AdbException.Protocol("Device reported sideload failure: $reqStr")
+                            if (reqStr == "FAILFAIL") {
+                                throw AdbException.Protocol("Device reported sideload failure")
                             }
 
                             val blockNum =
