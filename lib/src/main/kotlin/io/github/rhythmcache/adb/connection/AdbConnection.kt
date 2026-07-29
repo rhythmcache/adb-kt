@@ -141,6 +141,8 @@ class AdbConnection private constructor(
                         val pkt =
                             try {
                                 transport.recv()
+                            } catch (e: AdbException.Timeout) {
+                                continue
                             } catch (e: Exception) {
                                 broadcastError(streams, streamsMutex, e)
                                 if (!handshakeResult.isCompleted) handshakeResult.completeExceptionally(e)
