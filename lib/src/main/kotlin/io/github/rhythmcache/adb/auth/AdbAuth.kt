@@ -15,7 +15,7 @@ object AdbAuth {
         return kpg.generateKeyPair()
     }
 
-    /** Signs the 20-byte SHA1 token adbd sends during AUTH. */
+    /** Signs the 20 byte SHA1 token adbd sends during AUTH. */
     fun signToken(
         privateKey: PrivateKey,
         token: ByteArray,
@@ -32,8 +32,14 @@ object AdbAuth {
         return cipher.doFinal(digestInfo)
     }
 
-    /** Encodes RSA public key in ADB mincrypt format. */
-    fun encodePublicKeyAdb(publicKey: RSAPublicKey): ByteArray {
+    /**
+     * Encodes an RSA public key into the raw binary ADB mincrypt structure
+     * (modulus_size_words, n0inv, modulus, RR, exponent all little endian).
+     * This is the cryptographic identity of the key: no comment, no username,
+     * fully deterministic given the same key. Use this (not [encodePublicKeyAdb])
+     * whenever you need something stable to hash, compare, or fingerprint.
+     */
+    fun encodePublicKeyBlob(publicKey: RSAPublicKey): ByteArray {
         val words = 64
         val n = publicKey.modulus
         val e = publicKey.publicExponent
@@ -54,7 +60,20 @@ object AdbAuth {
         for (w in rrWords) writeLeU32(buf, w)
         writeLeU32(buf, eVal)
 
-        val b64 = Base64.getEncoder().encodeToString(buf.toByteArray())
+        return buf.toByteArray()
+    }
+
+    /**
+     * Encodes RSA public key in the format adb actually writes to adbkey.pub
+     * and sends over the wire: Base64(mincrypt blob) + " " + user@host + NUL.
+     * The trailing "user@host" is a display comment only .... it is not part of
+     * the key's identity and differs between machines/regenerations. Do not
+     * hash this output expecting a stable fingerprint; use
+     * [encodePublicKeyBlob] for that instead.
+     */
+    fun encodePublicKeyAdb(publicKey: RSAPublicKey): ByteArray {
+        val blob = encodePublicKeyBlob(publicKey)
+        val b64 = Base64.getEncoder().encodeToString(blob)
         val userHost = "${System.getProperty("user.name") ?: "user"}@adb_kt"
         return "$b64 $userHost\u0000".toByteArray(Charsets.US_ASCII)
     }
