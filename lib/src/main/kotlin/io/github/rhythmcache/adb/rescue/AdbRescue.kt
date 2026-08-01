@@ -12,7 +12,9 @@ import kotlinx.coroutines.flow.flowOn
 import java.io.EOFException
 import java.io.File
 
-class AdbRescue(private val connection: AdbConnection) {
+class AdbRescue(
+    private val connection: AdbConnection,
+) {
     fun install(
         file: File,
         blockSize: Int = AdbSideload.DEFAULT_BLOCK_SIZE,

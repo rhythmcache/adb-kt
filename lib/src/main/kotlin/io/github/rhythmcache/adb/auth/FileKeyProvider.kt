@@ -34,7 +34,8 @@ class FileKeyProvider(
                 val privKey: RSAPrivateCrtKey =
                     if (text.contains("-----BEGIN")) {
                         val cleanBase64 =
-                            text.lines()
+                            text
+                                .lines()
                                 .filter { !it.startsWith("-----") }
                                 .joinToString("")
                                 .replace("\\s".toRegex(), "")

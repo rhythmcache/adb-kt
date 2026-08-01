@@ -48,6 +48,7 @@ class AdbConnection private constructor(
             transport: PacketTransport,
             keyProvider: AdbKeyProvider,
             handshakeTimeoutMs: Long = 30_000,
+            skipInitialCnxn: Boolean = (transport is TlsPacketTransport),
         ): AdbConnection {
             val sharedCmdChannel = Channel<StreamCmd>(capacity = 64)
             val regChannel = Channel<StreamReg>(capacity = 16)
@@ -70,6 +71,7 @@ class AdbConnection private constructor(
                         regChannel,
                         keyProvider,
                         handshakeResult,
+                        skipInitialCnxn,
                     ) { mode, banner, payloadSize ->
                         detectedMode = mode
                         detectedBanner = banner
@@ -101,6 +103,7 @@ class AdbConnection private constructor(
             transport: PacketTransport,
             keyPair: KeyPair,
             handshakeTimeoutMs: Long = 30_000,
+            skipInitialCnxn: Boolean = (transport is TlsPacketTransport),
         ): AdbConnection =
             connect(
                 transport,
@@ -108,6 +111,7 @@ class AdbConnection private constructor(
                     override suspend fun getKeyPair(): KeyPair = keyPair
                 },
                 handshakeTimeoutMs,
+                skipInitialCnxn,
             )
 
         private suspend fun ioLoop(
@@ -118,19 +122,21 @@ class AdbConnection private constructor(
             regChannel: Channel<StreamReg>,
             keyProvider: AdbKeyProvider,
             handshakeResult: CompletableDeferred<Unit>,
+            skipInitialCnxn: Boolean = false,
             onBannerReceived: (AdbDeviceMode, String, Int) -> Unit,
         ) = coroutineScope {
-            val features =
-                "host::features=shell_v2,cmd,stat_v2,ls_v2,fixed_push_mkdir," +
-                    "apex,abb,fixed_push_symlink_timestamp,abb_exec,remount_shell,track_app," +
-                    "sendrecv_v2,sendrecv_v2_brotli,sendrecv_v2_lz4,sendrecv_v2_zstd," +
-                    "sendrecv_v2_dry_run_send,openscreen_mdns\u0000"
-
-            try {
-                transport.send(AdbPacket(AdbCmd.CNXN, ADB_VERSION, MAX_PAYLOAD, features.toByteArray(Charsets.US_ASCII)))
-            } catch (e: Exception) {
-                handshakeResult.completeExceptionally(e)
-                return@coroutineScope
+            // On a TLS transport, the plaintext CNXN was already sent in
+            // TlsPacketTransport.connect() to trigger the STLS upgrade flow.
+            // Sending another encrypted CNXN would cause the device to call
+            // handle_offline() + send_tls_request() again, tearing down the
+            // connection. The device auto-sends its encrypted CNXN after TLS.
+            if (!skipInitialCnxn) {
+                try {
+                    transport.send(AdbPacket(AdbCmd.CNXN, ADB_VERSION, MAX_PAYLOAD, HOST_FEATURES_BYTES))
+                } catch (e: Exception) {
+                    handshakeResult.completeExceptionally(e)
+                    return@coroutineScope
+                }
             }
 
             var triedSignature = false

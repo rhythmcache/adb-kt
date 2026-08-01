@@ -32,9 +32,7 @@ class TcpPacketTransport private constructor(
         pkt.writeTo(sink)
     }
 
-    override fun recv(): AdbPacket {
-        return AdbPacket.readFrom(source)
-    }
+    override fun recv(): AdbPacket = AdbPacket.readFrom(source)
 
     override fun close() {
         runCatching { source.close() }

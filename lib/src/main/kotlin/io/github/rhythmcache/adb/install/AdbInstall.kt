@@ -22,7 +22,9 @@ data class InstallResult(
     val message: String,
 )
 
-class AdbInstall(private val connection: AdbConnection) {
+class AdbInstall(
+    private val connection: AdbConnection,
+) {
     companion object {
         const val DEFAULT_BUFFER_SIZE = 64 * 1024 // 64KB
     }

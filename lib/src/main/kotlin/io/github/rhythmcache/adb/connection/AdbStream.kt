@@ -10,11 +10,22 @@ import java.io.EOFException
 import java.util.concurrent.atomic.AtomicBoolean
 
 internal sealed class StreamCmd {
-    data class Write(val localId: Int, val remoteId: Int, val data: ByteArray, val offset: Int, val length: Int) : StreamCmd()
+    data class Write(
+        val localId: Int,
+        val remoteId: Int,
+        val data: ByteArray,
+        val offset: Int,
+        val length: Int,
+    ) : StreamCmd()
 
-    data class Close(val localId: Int, val remoteId: Int) : StreamCmd()
+    data class Close(
+        val localId: Int,
+        val remoteId: Int,
+    ) : StreamCmd()
 
-    data class AbortOpen(val localId: Int) : StreamCmd()
+    data class AbortOpen(
+        val localId: Int,
+    ) : StreamCmd()
 }
 
 internal class StreamShared(

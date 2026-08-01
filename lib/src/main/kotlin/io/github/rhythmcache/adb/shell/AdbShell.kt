@@ -14,11 +14,17 @@ data class ShellResult(
 }
 
 sealed class ShellChunk {
-    data class Stdout(val text: String) : ShellChunk()
+    data class Stdout(
+        val text: String,
+    ) : ShellChunk()
 
-    data class Stderr(val text: String) : ShellChunk()
+    data class Stderr(
+        val text: String,
+    ) : ShellChunk()
 
-    data class Exit(val code: Int) : ShellChunk()
+    data class Exit(
+        val code: Int,
+    ) : ShellChunk()
 }
 
 private data class ShellHeader(

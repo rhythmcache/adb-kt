@@ -22,9 +22,21 @@ object AdbAuth {
     ): ByteArray {
         val sha1DigestInfoPrefix =
             byteArrayOf(
-                0x30, 0x21, 0x30, 0x09, 0x06, 0x05,
-                0x2b, 0x0e, 0x03, 0x02, 0x1a,
-                0x05, 0x00, 0x04, 0x14,
+                0x30,
+                0x21,
+                0x30,
+                0x09,
+                0x06,
+                0x05,
+                0x2b,
+                0x0e,
+                0x03,
+                0x02,
+                0x1a,
+                0x05,
+                0x00,
+                0x04,
+                0x14,
             )
         val digestInfo = sha1DigestInfoPrefix + token
         val cipher = javax.crypto.Cipher.getInstance("RSA/ECB/PKCS1Padding")
@@ -92,7 +104,11 @@ object AdbAuth {
         val r32 = BigInteger.valueOf(2).pow(32)
         val n0 = n.mod(r32)
         val inv = n0.modInverse(r32)
-        return r32.subtract(inv).mod(r32).toLong().toInt()
+        return r32
+            .subtract(inv)
+            .mod(r32)
+            .toLong()
+            .toInt()
     }
 
     private fun computeRSquared(

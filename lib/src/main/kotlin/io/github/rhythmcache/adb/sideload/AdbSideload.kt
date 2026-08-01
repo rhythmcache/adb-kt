@@ -16,7 +16,9 @@ data class SideloadProgress(
     val percentage: Float,
 )
 
-class AdbSideload(private val connection: AdbConnection) {
+class AdbSideload(
+    private val connection: AdbConnection,
+) {
     companion object {
         const val DEFAULT_BLOCK_SIZE = 64 * 1024 // 64KB
     }

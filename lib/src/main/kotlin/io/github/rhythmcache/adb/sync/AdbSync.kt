@@ -5,7 +5,9 @@ import java.io.FileDescriptor
 import java.io.InputStream
 import java.io.OutputStream
 
-class AdbSync internal constructor(private val connection: AdbConnection) {
+class AdbSync internal constructor(
+    private val connection: AdbConnection,
+) {
     suspend fun stat(
         remotePath: String,
         followSymlinks: Boolean = false,

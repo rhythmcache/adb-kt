@@ -60,5 +60,9 @@ publishing {
 dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.okio)
+    implementation(libs.bouncycastle.prov)
+    implementation(libs.bouncycastle.pkix)
+    implementation(libs.bouncycastle.tls)
+    implementation(libs.spake2.kt)
     testImplementation(libs.junit)
 }

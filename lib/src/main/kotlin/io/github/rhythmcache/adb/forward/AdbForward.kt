@@ -1,6 +1,8 @@
 package io.github.rhythmcache.adb
 
-class AdbForward internal constructor(private val connection: AdbConnection) {
+class AdbForward internal constructor(
+    private val connection: AdbConnection,
+) {
     suspend fun add(
         local: String,
         remote: String,
