@@ -37,16 +37,17 @@ The core library is transport-agnostic. Only a `PacketTransport` implementation 
 
 - Pure Kotlin implementation with zero native binary dependencies.
 - Coroutine-first API using Kotlin Flow, Channel, Semaphore, and SupervisorJob.
-- Transport-agnostic design supporting TCP out of the box, plus custom USB, WebSocket, or Bluetooth transports.
+- Transport-agnostic design supporting Plain TCP and Android 11+ Wireless Debugging TLS out of the box, plus custom USB, WebSocket, or Bluetooth transports.
+- Android 11+ Wireless Debugging TLS 1.3 support with SPAKE2 password-authenticated pairing.
 - Automatic device mode detection (`DEVICE`, `RECOVERY`, `SIDELOAD`, `RESCUE`, `HOST`) from initial `CNXN` banner handshakes.
 - `RandomAccessSource` API for zero-copy Android SAF (`content://` URI) and `FileDescriptor` stream integration.
 - Zero-copy streaming APK installer supporting single APKs and split APK bundles (`.apks` / `.xapk`) via `exec:cmd package`.
 - Full OTA sideloading supporting modern demand/pull `sideload-host` and legacy pre-KitKat `sideload:` protocols with progress flows.
 - Android Rescue Party subsystem supporting `rescue-install`, `rescue-getprop`, and `rescue-wipe`.
 - AOSP-compliant 2048-bit RSA key authentication with PKCS#1, PKCS#8, and binary DER support.
-- Multiplexed connection engine running concurrent shell sessions, file syncs, and custom streams over a single connection.
+- Multiplexed connection engine running concurrent shell sessions, file syncs, and custom streams over a single connection with transparent `maxPayload` write chunking.
 - Reactive Shell v2 protocol subsystem with live Flow streaming.
-- Streamed File Sync supporting InputStream, OutputStream, FileDescriptor, and Android Content URIs.
+- Streamed File Sync supporting 64-bit `STAT_v2` feature flag auto-detection, InputStream, OutputStream, FileDescriptor, and Android Content URIs.
 - Type-safe endpoint routing for TCP, LocalAbstract, LocalFileSystem, JDWP, and raw specs.
 - Full host port forwarding and device reverse port mapping.
 
@@ -72,7 +73,7 @@ dependencies {
 
 `AdbClient` is the main entry point for interacting with an ADB device. Because `AdbClient` implements `Closeable`, using `.use { }` ensures automatic resource cleanup.
 
-### Connecting over TCP/IP
+### Connecting over Plain TCP (USB / Port 5555)
 
 ```kotlin
 import io.github.rhythmcache.adb.*
@@ -83,7 +84,7 @@ fun main() = runBlocking {
     val keyFile = File(System.getProperty("user.home"), ".android/adbkey")
     val keyProvider = FileKeyProvider(keyFile)
 
-    AdbClient.connect(
+    AdbClient.connectTcp(
         host = "192.168.1.100",
         port = 5555,
         keyProvider = keyProvider,
@@ -95,9 +96,46 @@ fun main() = runBlocking {
 }
 ```
 
+### Wireless Debugging over TLS (Android 11+)
+
+Android 11+ Wireless Debugging uses TLS 1.3 encryption. To connect to an Android 11+ Wireless Debugging port (e.g., port `41593`):
+
+#### 1. Initial SPAKE2 Wireless Pairing (Done once using 6-digit code)
+
+```kotlin
+val keyProvider = FileKeyProvider(keyFile)
+
+// Pair using 6-digit pairing code shown on phone screen
+val pairResult = AdbClient.pairTls(
+    host = "192.168.1.100",
+    port = 37625,         // Pairing Port from phone screen
+    pairingCode = "851282", // 6-digit Pairing Code
+    keyProvider = keyProvider
+)
+
+if (pairResult.isSuccess) {
+    println("Pairing successful!")
+}
+```
+
+#### 2. Connecting to Wireless Debugging Port
+
+Once paired, connect directly to the Wireless Debugging port:
+
+```kotlin
+AdbClient.connectTls(
+    host = "192.168.1.100",
+    port = 41593,         // Wireless Debugging Port
+    keyProvider = keyProvider
+).use { client ->
+    val result = client.shell("getprop ro.product.model")
+    println("Device Model: ${result.stdoutText.trim()}")
+}
+```
+
 ### Connecting over Custom Transports (USB, WebSockets, Bluetooth)
 
-`AdbClient` accepts any implementation of `PacketTransport`:
+`AdbClient` accepts any custom implementation of `PacketTransport`:
 
 ```kotlin
 class UsbPacketTransport(
@@ -135,7 +173,7 @@ When connecting to a device, `adb-kt` automatically parses the response payload 
 ### Inspecting Connection Mode
 
 ```kotlin
-AdbClient.connect("192.168.1.100", 5555, keyProvider).use { client ->
+AdbClient.connectTcp("192.168.1.100", 5555, keyProvider).use { client ->
     println("Device Mode: ${client.deviceMode}") // DEVICE, RECOVERY, SIDELOAD, RESCUE, HOST, or UNKNOWN
     println("Full Banner: ${client.bannerString}")
 }
@@ -345,7 +383,7 @@ AdbClient.connect("192.168.1.100", 5555, keyProvider).use { client ->
 
 ## 13. Sync Subsystem
 
-`client.sync` handles remote file inspection and streaming file transfers.
+`client.sync` handles remote file inspection and streaming file transfers. It automatically checks the device's feature flags during connection setup and uses modern 64-bit `STAT_v2` protocol for large file inspection when supported by the device, seamlessly falling back to legacy 32-bit `STAT` otherwise.
 
 ### Inspecting Remote File Info (`stat`)
 

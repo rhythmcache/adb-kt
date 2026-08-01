@@ -16,6 +16,8 @@ For full API documentation, see [DOCUMENTATION.md](DOCUMENTATION.md).
 ## Features
 
 - Coroutine-Native Architecture: Built using Kotlin Coroutines (`Flow`, `Channel`, `Semaphore`, and `SupervisorJob`) for structured concurrency and high throughput.
+- Android 11+ Wireless Debugging over TLS:
+  - Native TLS 1.3 encryption and SPAKE2 password-authenticated wireless pairing (`AdbClient.pairTls` & `AdbClient.connectTls`).
 - AOSP-Compliant RSA Authentication:
   - Full support for PKCS#1 and PKCS#8 private keys in PEM and binary DER formats.
   - AOSP 2048-bit RSA mincrypt public key encoding with `n0inv` Montgomery inverse calculation.
@@ -47,9 +49,9 @@ dependencies {
 
 ## Quick Start
 
-### Basic Shell Execution
+### 1. Plain TCP (USB / Port 5555)
 
-Connect to an Android device over TCP and run a shell command:
+Connect to an Android device over Plain TCP and run a shell command:
 
 ```kotlin
 import io.github.rhythmcache.adb.*
@@ -60,12 +62,25 @@ fun main() = runBlocking {
     val keyFile = File(System.getProperty("user.home"), ".android/adbkey")
     val keyProvider = FileKeyProvider(keyFile)
 
-    val client = AdbClient.connect("192.168.1.100", 5555, keyProvider = keyProvider)
+    AdbClient.connectTcp("192.168.1.100", 5555, keyProvider).use { client ->
+        val result: ShellResult = client.shell("getprop ro.product.model")
+        println("Device Model: ${result.stdoutText.trim()}")
+    }
+}
+```
 
-    val result: ShellResult = client.shell("getprop ro.product.model")
+### 2. Wireless Debugging over TLS (Android 11+)
+
+Pair using 6-digit pairing code and connect over TLS 1.3:
+
+```kotlin
+// 1. Pair device (once)
+AdbClient.pairTls("192.168.1.100", 37625, "851282", keyProvider)
+
+// 2. Connect to Wireless Debugging port
+AdbClient.connectTls("192.168.1.100", 41593, keyProvider).use { client ->
+    val result = client.shell("getprop ro.product.model")
     println("Device Model: ${result.stdoutText.trim()}")
-
-    client.close()
 }
 ```
 
