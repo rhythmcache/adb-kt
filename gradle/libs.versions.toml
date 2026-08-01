@@ -1,16 +1,20 @@
 [versions]
-kotlin     = "2.4.10"
-coroutines = "1.11.0"
-okio       = "3.17.0"
-ktlint     = "12.1.2"
+kotlin       = "2.4.10"
+coroutines   = "1.11.0"
+okio         = "3.18.1"
+ktlint       = "14.2.0"
+spake2       = "1.0.0"
+bouncycastle = "1.85"
 
 [libraries]
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
 okio                    = { group = "com.squareup.okio", name = "okio", version.ref = "okio" }
+bouncycastle-prov       = { group = "org.bouncycastle", name = "bcprov-jdk18on", version.ref = "bouncycastle" }
+bouncycastle-pkix       = { group = "org.bouncycastle", name = "bcpkix-jdk18on", version.ref = "bouncycastle" }
+bouncycastle-tls        = { group = "org.bouncycastle", name = "bctls-jdk18on", version.ref = "bouncycastle" }
+spake2-kt               = { group = "com.github.rhythmcache", name = "spake2-kt", version.ref = "spake2" }
 junit                   = { group = "junit", name = "junit", version = "4.13.2" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 ktlint     = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlint" }
-
-
