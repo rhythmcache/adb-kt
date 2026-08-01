@@ -3,7 +3,7 @@ kotlin       = "2.4.10"
 coroutines   = "1.11.0"
 okio         = "3.18.1"
 ktlint       = "14.2.0"
-spake2       = "1.0.0"
+spake2       = "v1.0.1"
 bouncycastle = "1.85"
 
 [libraries]
