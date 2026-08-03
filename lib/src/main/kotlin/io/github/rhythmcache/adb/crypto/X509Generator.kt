@@ -30,9 +30,8 @@ object X509Generator {
     private const val CERT_LIFETIME_SECONDS = 10L * 365 * 24 * 60 * 60
 
     init {
-        if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
-            Security.addProvider(BouncyCastleProvider())
-        }
+        Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
+        Security.insertProviderAt(BouncyCastleProvider(), 1)
     }
 
     /** Generates a self-signed X.509 certificate for [keyPair]. */
