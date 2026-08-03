@@ -28,8 +28,12 @@ class TcpPacketTransport private constructor(
             }
     }
 
+    private val writeLock = Any()
+
     override fun send(pkt: AdbPacket) {
-        pkt.writeTo(sink)
+        synchronized(writeLock) {
+            pkt.writeTo(sink)
+        }
     }
 
     override fun recv(): AdbPacket = AdbPacket.readFrom(source)

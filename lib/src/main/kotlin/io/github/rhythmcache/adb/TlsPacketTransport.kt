@@ -219,10 +219,12 @@ class TlsPacketTransport private constructor(
         }
     }
 
-    // Identical to TcpPacketTransport -- no reimplementation of packet
-    // framing/checksums, just delegating to AdbPacket as already written.
+    private val writeLock = Any()
+
     override fun send(pkt: AdbPacket) {
-        pkt.writeTo(sink)
+        synchronized(writeLock) {
+            pkt.writeTo(sink)
+        }
     }
 
     override fun recv(): AdbPacket {
