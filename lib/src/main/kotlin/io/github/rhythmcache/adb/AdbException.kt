@@ -37,4 +37,9 @@ sealed class AdbException(
     class ServerFail(
         message: String,
     ) : AdbException(message)
+
+    class NotPaired(
+        message: String = "Device rejected this key - pair it first.",
+        cause: Throwable? = null,
+    ) : AdbException(message, cause)
 }

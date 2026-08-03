@@ -166,6 +166,13 @@ class TlsPacketTransport private constructor(
 
                 try {
                     protocol.connect(client) // blocks until handshake completes or throws
+                } catch (e: org.bouncycastle.tls.TlsFatalAlert) {
+                    runCatching { protocol.close() }
+                    runCatching { socket.close() }
+                    if (isCertRejectionAlert(e.alertDescription)) {
+                        throw AdbException.NotPaired(cause = e)
+                    }
+                    throw AdbException.Transport("TLS handshake failed", e)
                 } catch (e: Exception) {
                     runCatching { protocol.close() }
                     runCatching { socket.close() }
@@ -176,6 +183,16 @@ class TlsPacketTransport private constructor(
                 val sink = protocol.outputStream.sink().buffer()
 
                 TlsPacketTransport(socket, protocol, source, sink)
+            }
+
+        private fun isCertRejectionAlert(desc: Short): Boolean =
+            when (desc) {
+                org.bouncycastle.tls.AlertDescription.bad_certificate,
+                org.bouncycastle.tls.AlertDescription.certificate_unknown,
+                org.bouncycastle.tls.AlertDescription.unknown_ca,
+                org.bouncycastle.tls.AlertDescription.access_denied,
+                -> true
+                else -> false
             }
 
         private fun parseIdentity(
@@ -208,7 +225,29 @@ class TlsPacketTransport private constructor(
         pkt.writeTo(sink)
     }
 
-    override fun recv(): AdbPacket = AdbPacket.readFrom(source)
+    override fun recv(): AdbPacket {
+        try {
+            return AdbPacket.readFrom(source)
+        } catch (e: AdbException.Transport) {
+            val alertDesc = findTlsFatalAlert(e)
+            if (alertDesc != null && isCertRejectionAlert(alertDesc)) {
+                throw AdbException.NotPaired(cause = e)
+            }
+            throw e
+        }
+    }
+
+    private fun findTlsFatalAlert(e: Throwable): Short? {
+        var cur: Throwable? = e
+        while (cur != null) {
+            when (cur) {
+                is org.bouncycastle.tls.TlsFatalAlertReceived -> return cur.alertDescription
+                is org.bouncycastle.tls.TlsFatalAlert -> return cur.alertDescription
+            }
+            cur = cur.cause
+        }
+        return null
+    }
 
     override fun close() {
         runCatching { source.close() }
