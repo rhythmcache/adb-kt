@@ -29,7 +29,7 @@ internal sealed class StreamCmd {
 }
 
 internal class StreamShared(
-    val dataChannel: Channel<Result<ByteArray>> = Channel(capacity = 64),
+    val dataChannel: Channel<Result<ByteArray>> = Channel(capacity = Channel.UNLIMITED),
     var openSignal: CompletableDeferred<Int>? = CompletableDeferred(),
     val flowSemaphore: Semaphore = Semaphore(permits = 1, acquiredPermits = 1),
     var remoteId: Int? = null,
