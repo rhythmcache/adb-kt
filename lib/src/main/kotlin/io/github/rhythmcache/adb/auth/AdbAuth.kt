@@ -83,11 +83,14 @@ object AdbAuth {
      * hash this output expecting a stable fingerprint; use
      * [encodePublicKeyBlob] for that instead.
      */
-    fun encodePublicKeyAdb(publicKey: RSAPublicKey): ByteArray {
+    fun encodePublicKeyAdb(
+        publicKey: RSAPublicKey,
+        identityComment: String = "${System.getProperty("user.name") ?: "user"}@adb_kt",
+    ): ByteArray {
         val blob = encodePublicKeyBlob(publicKey)
         val b64 = Base64.getEncoder().encodeToString(blob)
-        val userHost = "${System.getProperty("user.name") ?: "user"}@adb_kt"
-        return "$b64 $userHost\u0000".toByteArray(Charsets.US_ASCII)
+        val comment = identityComment.ifBlank { "${System.getProperty("user.name") ?: "user"}@adb_kt" }
+        return "$b64 $comment\u0000".toByteArray(Charsets.US_ASCII)
     }
 
     private fun writeLeU32(

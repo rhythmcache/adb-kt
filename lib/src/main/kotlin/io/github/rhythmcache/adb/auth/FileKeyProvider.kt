@@ -13,10 +13,26 @@ import java.util.Base64
 class FileKeyProvider(
     private val keyFile: File,
     private val pubKeyFile: File? = null,
+    private val identityComment: String? = null,
 ) : AdbKeyProvider {
     private var loadedKeyPair: KeyPair? = null
 
     override suspend fun getAdbPublicKeyBytes(): ByteArray? {
+        if (identityComment != null) {
+            val kp = getKeyPair()
+            val pubKey = kp.public as RSAPublicKey
+            return AdbAuth.encodePublicKeyAdb(pubKey, identityComment)
+        }
+        val targetPub = pubKeyFile ?: File(keyFile.parentFile ?: File("."), "${keyFile.name}.pub")
+        if (targetPub.exists() && targetPub.length() > 0) {
+            try {
+                val text = targetPub.readText(Charsets.US_ASCII).trim()
+                if (text.isNotBlank()) {
+                    return if (text.endsWith("\u0000")) text.toByteArray(Charsets.US_ASCII) else "$text\u0000".toByteArray(Charsets.US_ASCII)
+                }
+            } catch (_: Exception) {
+            }
+        }
         val kp = getKeyPair()
         val pubKey = kp.public as RSAPublicKey
         return AdbAuth.encodePublicKeyAdb(pubKey)
@@ -66,7 +82,11 @@ class FileKeyProvider(
         try {
             keyFile.parentFile?.mkdirs()
             keyFile.writeBytes(generated.private.encoded)
-            val pubBytes = AdbAuth.encodePublicKeyAdb(generated.public as RSAPublicKey)
+            val pubBytes = if (identityComment != null) {
+                AdbAuth.encodePublicKeyAdb(generated.public as RSAPublicKey, identityComment)
+            } else {
+                AdbAuth.encodePublicKeyAdb(generated.public as RSAPublicKey)
+            }
             val targetPubFile = pubKeyFile ?: File(keyFile.parentFile, "${keyFile.name}.pub")
             targetPubFile.writeBytes(pubBytes)
         } catch (_: Exception) {

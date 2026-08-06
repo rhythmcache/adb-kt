@@ -10,6 +10,9 @@ import io.github.rhythmcache.adb.rescue.AdbRescue
 import io.github.rhythmcache.adb.sideload.AdbSideload
 import io.github.rhythmcache.adb.sync.AdbSync
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import java.io.Closeable
 import java.security.interfaces.RSAPublicKey
 
@@ -120,6 +123,67 @@ class AdbClient private constructor(
                 stream.close()
             }
         }
+
+    /** Restart adbd with root permissions (requires eng or userdebug build). */
+    suspend fun root(timeoutMs: Long = 5000): String = withContext(Dispatchers.IO) {
+        val stream = connection.open("root:")
+        try {
+            val result = withTimeoutOrNull(timeoutMs) {
+                val bytes = stream.readToEnd()
+                String(bytes, Charsets.UTF_8).trim()
+            }
+            when {
+                result == null -> "Timeout: Daemon failed to respond"
+                result.isEmpty() -> "No output returned by daemon"
+                else -> result
+            }
+        } catch (e: Exception) {
+            "Error: ${e.message}"
+        } finally {
+            runCatching { stream.close() }
+        }
+    }
+
+    /** Restart adbd without root permissions. */
+    suspend fun unroot(timeoutMs: Long = 5000): String = withContext(Dispatchers.IO) {
+        val stream = connection.open("unroot:")
+        try {
+            val result = withTimeoutOrNull(timeoutMs) {
+                val bytes = stream.readToEnd()
+                String(bytes, Charsets.UTF_8).trim()
+            }
+            when {
+                result == null -> "Timeout: Daemon failed to respond"
+                result.isEmpty() -> "No output returned by daemon"
+                else -> result
+            }
+        } catch (e: Exception) {
+            "Error: ${e.message}"
+        } finally {
+            runCatching { stream.close() }
+        }
+    }
+
+    /** Restart adbd listening on TCP on the specified port. */
+    suspend fun tcpip(port: Int = 5555, timeoutMs: Long = 5000): String = withContext(Dispatchers.IO) {
+        require(port in 1..65535) { "Invalid TCP port: $port" }
+        val stream = connection.open("tcpip:$port")
+        try {
+            val result = withTimeoutOrNull(timeoutMs) {
+                val bytes = stream.readToEnd()
+                String(bytes, Charsets.UTF_8).trim()
+            }
+            when {
+                result == null -> "Timeout: Daemon failed to respond"
+                result.isEmpty() -> "No output returned by daemon"
+                else -> result
+            }
+        } catch (e: Exception) {
+            "Error: ${e.message}"
+        } finally {
+            runCatching { stream.close() }
+        }
+    }
 
     val isClosed: Boolean get() = connection.isClosed
 
