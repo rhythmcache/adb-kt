@@ -1,6 +1,7 @@
 package io.github.rhythmcache.adb.pairing
 
 import io.github.rhythmcache.adb.AdbAuth
+import io.github.rhythmcache.adb.AdbKeyProvider
 import java.security.interfaces.RSAPublicKey
 
 /**
@@ -9,12 +10,30 @@ import java.security.interfaces.RSAPublicKey
  * ADB_RSA_PUB_KEY, data = adb_auth_get_userkey()).
  */
 object PeerInfoBuilder {
-    fun forOurPublicKey(publicKey: RSAPublicKey): PeerInfo {
-        val keyBytes = AdbAuth.encodePublicKeyAdb(publicKey)
+    fun forOurPublicKey(
+        publicKey: RSAPublicKey,
+        identityComment: String? = null,
+    ): PeerInfo {
+        val keyBytes =
+            if (identityComment != null) {
+                AdbAuth.encodePublicKeyAdb(publicKey, identityComment)
+            } else {
+                AdbAuth.encodePublicKeyAdb(publicKey)
+            }
         require(keyBytes.size <= PEER_INFO_SIZE - 1) {
             "Encoded public key too large for PeerInfo: ${keyBytes.size} bytes"
         }
         return PeerInfo(PeerInfoType.ADB_RSA_PUB_KEY, keyBytes)
+    }
+
+    /** Builds PeerInfo using an AdbKeyProvider, preserving its configured identity comment or disk key format. */
+    suspend fun forOurKeyProvider(keyProvider: AdbKeyProvider): PeerInfo {
+        val pubBytes = keyProvider.getAdbPublicKeyBytes()
+        if (pubBytes != null && pubBytes.size <= PEER_INFO_SIZE - 1) {
+            return PeerInfo(PeerInfoType.ADB_RSA_PUB_KEY, pubBytes)
+        }
+        val kp = keyProvider.getKeyPair()
+        return forOurPublicKey(kp.public as RSAPublicKey)
     }
 
     /** Extracts the device GUID string from a decoded PeerInfo of type ADB_DEVICE_GUID. */

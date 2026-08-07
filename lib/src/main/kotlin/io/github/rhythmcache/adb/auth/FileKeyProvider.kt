@@ -28,7 +28,14 @@ class FileKeyProvider(
             try {
                 val text = targetPub.readText(Charsets.US_ASCII).trim()
                 if (text.isNotBlank()) {
-                    return if (text.endsWith("\u0000")) text.toByteArray(Charsets.US_ASCII) else "$text\u0000".toByteArray(Charsets.US_ASCII)
+                    return if (text.endsWith(
+                            "\u0000",
+                        )
+                    ) {
+                        text.toByteArray(Charsets.US_ASCII)
+                    } else {
+                        "$text\u0000".toByteArray(Charsets.US_ASCII)
+                    }
                 }
             } catch (_: Exception) {
             }
@@ -82,11 +89,12 @@ class FileKeyProvider(
         try {
             keyFile.parentFile?.mkdirs()
             keyFile.writeBytes(generated.private.encoded)
-            val pubBytes = if (identityComment != null) {
-                AdbAuth.encodePublicKeyAdb(generated.public as RSAPublicKey, identityComment)
-            } else {
-                AdbAuth.encodePublicKeyAdb(generated.public as RSAPublicKey)
-            }
+            val pubBytes =
+                if (identityComment != null) {
+                    AdbAuth.encodePublicKeyAdb(generated.public as RSAPublicKey, identityComment)
+                } else {
+                    AdbAuth.encodePublicKeyAdb(generated.public as RSAPublicKey)
+                }
             val targetPubFile = pubKeyFile ?: File(keyFile.parentFile, "${keyFile.name}.pub")
             targetPubFile.writeBytes(pubBytes)
         } catch (_: Exception) {
