@@ -123,6 +123,29 @@ class AdbClient private constructor(
             }
         }
 
+    /**
+     * Opens an interactive Shell v2 PTY session with terminal type and optional initial dimensions.
+     * Passing non-positive values for [rows] or [cols] skips the initial dimension synchronization.
+     */
+    suspend fun openInteractiveShell(
+        terminalType: String = "xterm-256color",
+        rows: Int = 24,
+        cols: Int = 80,
+    ): AdbInteractiveSession {
+        val service =
+            if (terminalType.isNotBlank()) {
+                "shell,v2,pty,TERM=$terminalType:"
+            } else {
+                "shell,v2,pty:"
+            }
+        val stream = connection.open(service)
+        val session = AdbInteractiveSession(stream)
+        if (rows > 0 && cols > 0) {
+            session.resize(cols, rows)
+        }
+        return session
+    }
+
     /** Restart adbd with root permissions (requires eng or userdebug build). */
     suspend fun root(timeoutMs: Long = 5000): String =
         withContext(Dispatchers.IO) {
