@@ -1,6 +1,8 @@
 package io.github.rhythmcache.adb
 
 import io.github.rhythmcache.adb.crypto.CryptoProviders
+import org.bouncycastle.asn1.pkcs.PrivateKeyInfo
+import org.bouncycastle.asn1.pkcs.RSAPrivateKey as Asn1RsaPrivateKey
 import java.math.BigInteger
 import java.security.KeyFactory
 import java.security.KeyPair
@@ -14,9 +16,14 @@ import java.security.spec.RSAPublicKeySpec
 import java.util.Base64
 
 object AdbAuth {
-    /** Generate 2048-bit RSA keypair. */
+    /** Generate 2048-bit RSA keypair using BouncyCastle if available, falling back to default provider. */
     fun generateKey(): KeyPair {
-        val kpg = KeyPairGenerator.getInstance("RSA")
+        val kpg =
+            try {
+                CryptoProviders.rsaKeyPairGenerator()
+            } catch (_: Exception) {
+                KeyPairGenerator.getInstance("RSA")
+            }
         kpg.initialize(2048)
         return kpg.generateKeyPair()
     }
@@ -33,7 +40,6 @@ object AdbAuth {
      */
     fun parsePrivateKey(rawBytes: ByteArray): RSAPrivateCrtKey? {
         return try {
-            val kf = CryptoProviders.rsaKeyFactory()
             val text =
                 try {
                     String(rawBytes, Charsets.US_ASCII)
@@ -51,18 +57,69 @@ object AdbAuth {
                 val der = Base64.getDecoder().decode(cleanBase64)
 
                 if (text.contains("RSA PRIVATE KEY") || isPkcs1Der(der)) {
-                    parsePkcs1PrivateKey(der, kf)
+                    parsePkcs1PrivateKey(der) ?: parsePkcs8PrivateKey(der)
                 } else {
-                    kf.generatePrivate(PKCS8EncodedKeySpec(der)) as? RSAPrivateCrtKey
+                    parsePkcs8PrivateKey(der) ?: parsePkcs1PrivateKey(der)
                 }
             } else if (isPkcs1Der(rawBytes)) {
-                parsePkcs1PrivateKey(rawBytes, kf)
+                parsePkcs1PrivateKey(rawBytes) ?: parsePkcs8PrivateKey(rawBytes)
             } else {
-                kf.generatePrivate(PKCS8EncodedKeySpec(rawBytes)) as? RSAPrivateCrtKey
+                parsePkcs8PrivateKey(rawBytes) ?: parsePkcs1PrivateKey(rawBytes)
             }
         } catch (_: Exception) {
             null
         }
+    }
+
+    private fun parsePkcs8PrivateKey(der: ByteArray): RSAPrivateCrtKey? {
+        val spec = PKCS8EncodedKeySpec(der)
+
+        // 1. Try BouncyCastle KeyFactory with PKCS8EncodedKeySpec
+        try {
+            val kf = CryptoProviders.rsaKeyFactory()
+            val key = kf.generatePrivate(spec) as? RSAPrivateCrtKey
+            if (key != null) return key
+        } catch (_: Exception) {
+        }
+
+        // 2. Try parsing PKCS#8 ASN.1 directly to extract RSA CRT parameters
+        try {
+            val pki = PrivateKeyInfo.getInstance(der)
+            val rsa = Asn1RsaPrivateKey.getInstance(pki.parsePrivateKey())
+            val crtSpec =
+                RSAPrivateCrtKeySpec(
+                    rsa.modulus,
+                    rsa.publicExponent,
+                    rsa.privateExponent,
+                    rsa.prime1,
+                    rsa.prime2,
+                    rsa.exponent1,
+                    rsa.exponent2,
+                    rsa.coefficient,
+                )
+            val key =
+                try {
+                    CryptoProviders.rsaKeyFactory().generatePrivate(crtSpec) as? RSAPrivateCrtKey
+                } catch (_: Exception) {
+                    null
+                } ?: try {
+                    KeyFactory.getInstance("RSA").generatePrivate(crtSpec) as? RSAPrivateCrtKey
+                } catch (_: Exception) {
+                    null
+                }
+            if (key != null) return key
+        } catch (_: Exception) {
+        }
+
+        // 3. Try platform default KeyFactory (e.g. Conscrypt on Android 15/16)
+        try {
+            val defaultKf = KeyFactory.getInstance("RSA")
+            val key = defaultKf.generatePrivate(spec) as? RSAPrivateCrtKey
+            if (key != null) return key
+        } catch (_: Exception) {
+        }
+
+        return null
     }
 
     /**
@@ -72,7 +129,12 @@ object AdbAuth {
      */
     fun deriveKeyPair(privateKey: RSAPrivateCrtKey): KeyPair {
         val pubSpec = RSAPublicKeySpec(privateKey.modulus, privateKey.publicExponent)
-        val pubKey = CryptoProviders.rsaKeyFactory().generatePublic(pubSpec) as RSAPublicKey
+        val pubKey =
+            try {
+                CryptoProviders.rsaKeyFactory().generatePublic(pubSpec) as RSAPublicKey
+            } catch (_: Exception) {
+                KeyFactory.getInstance("RSA").generatePublic(pubSpec) as RSAPublicKey
+            }
         return KeyPair(pubKey, privateKey)
     }
 
@@ -93,37 +155,48 @@ object AdbAuth {
         }
     }
 
-    private fun parsePkcs1PrivateKey(
-        der: ByteArray,
-        kf: KeyFactory,
-    ): RSAPrivateCrtKey {
-        val buffer = java.nio.ByteBuffer.wrap(der)
-        require(buffer.get() == 0x30.toByte()) { "Invalid DER sequence" }
-        readDerLength(buffer)
+    private fun parsePkcs1PrivateKey(der: ByteArray): RSAPrivateCrtKey? {
+        return try {
+            val buffer = java.nio.ByteBuffer.wrap(der)
+            require(buffer.get() == 0x30.toByte()) { "Invalid DER sequence" }
+            readDerLength(buffer)
 
-        readDerInteger(buffer) // Version
+            readDerInteger(buffer) // Version
 
-        val modulus = readDerInteger(buffer)
-        val publicExponent = readDerInteger(buffer)
-        val privateExponent = readDerInteger(buffer)
-        val prime1 = readDerInteger(buffer)
-        val prime2 = readDerInteger(buffer)
-        val exponent1 = readDerInteger(buffer)
-        val exponent2 = readDerInteger(buffer)
-        val coefficient = readDerInteger(buffer)
+            val modulus = readDerInteger(buffer)
+            val publicExponent = readDerInteger(buffer)
+            val privateExponent = readDerInteger(buffer)
+            val prime1 = readDerInteger(buffer)
+            val prime2 = readDerInteger(buffer)
+            val exponent1 = readDerInteger(buffer)
+            val exponent2 = readDerInteger(buffer)
+            val coefficient = readDerInteger(buffer)
 
-        val spec =
-            RSAPrivateCrtKeySpec(
-                modulus,
-                publicExponent,
-                privateExponent,
-                prime1,
-                prime2,
-                exponent1,
-                exponent2,
-                coefficient,
-            )
-        return kf.generatePrivate(spec) as RSAPrivateCrtKey
+            val spec =
+                RSAPrivateCrtKeySpec(
+                    modulus,
+                    publicExponent,
+                    privateExponent,
+                    prime1,
+                    prime2,
+                    exponent1,
+                    exponent2,
+                    coefficient,
+                )
+            val key =
+                try {
+                    CryptoProviders.rsaKeyFactory().generatePrivate(spec) as? RSAPrivateCrtKey
+                } catch (_: Exception) {
+                    null
+                } ?: try {
+                    KeyFactory.getInstance("RSA").generatePrivate(spec) as? RSAPrivateCrtKey
+                } catch (_: Exception) {
+                    null
+                }
+            key
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun readDerLength(buf: java.nio.ByteBuffer): Int {

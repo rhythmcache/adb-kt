@@ -29,7 +29,7 @@ publishing {
             from(components["java"])
             groupId = "com.github.rhythmcache"
             artifactId = "adb-kt"
-            version = "1.0.7"
+            version = "1.0.8"
 
             pom {
                 name.set("adb-kt")
