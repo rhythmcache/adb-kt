@@ -1,10 +1,16 @@
 package io.github.rhythmcache.adb
 
+import io.github.rhythmcache.adb.crypto.CryptoProviders
 import java.math.BigInteger
+import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.PrivateKey
+import java.security.interfaces.RSAPrivateCrtKey
 import java.security.interfaces.RSAPublicKey
+import java.security.spec.PKCS8EncodedKeySpec
+import java.security.spec.RSAPrivateCrtKeySpec
+import java.security.spec.RSAPublicKeySpec
 import java.util.Base64
 
 object AdbAuth {
@@ -13,6 +19,132 @@ object AdbAuth {
         val kpg = KeyPairGenerator.getInstance("RSA")
         kpg.initialize(2048)
         return kpg.generateKeyPair()
+    }
+
+    /** Returns a BouncyCastle-backed RSA [KeyFactory]. */
+    fun getKeyFactory(): KeyFactory = CryptoProviders.rsaKeyFactory()
+
+    /**
+     * Parses an RSA private key from arbitrary raw bytes (PEM PKCS#1/PKCS#8,
+     * DER PKCS#1, or DER PKCS#8). Uses BouncyCastle so the resulting key always
+     * implements [RSAPrivateCrtKey] on all Android versions.
+     *
+     * Returns null on any parse failure; does not throw.
+     */
+    fun parsePrivateKey(rawBytes: ByteArray): RSAPrivateCrtKey? {
+        return try {
+            val kf = CryptoProviders.rsaKeyFactory()
+            val text =
+                try {
+                    String(rawBytes, Charsets.US_ASCII)
+                } catch (_: Exception) {
+                    ""
+                }
+
+            if (text.contains("-----BEGIN")) {
+                val cleanBase64 =
+                    text
+                        .lines()
+                        .filter { !it.startsWith("-----") }
+                        .joinToString("")
+                        .replace("\\s".toRegex(), "")
+                val der = Base64.getDecoder().decode(cleanBase64)
+
+                if (text.contains("RSA PRIVATE KEY") || isPkcs1Der(der)) {
+                    parsePkcs1PrivateKey(der, kf)
+                } else {
+                    kf.generatePrivate(PKCS8EncodedKeySpec(der)) as? RSAPrivateCrtKey
+                }
+            } else if (isPkcs1Der(rawBytes)) {
+                parsePkcs1PrivateKey(rawBytes, kf)
+            } else {
+                kf.generatePrivate(PKCS8EncodedKeySpec(rawBytes)) as? RSAPrivateCrtKey
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Derives an RSA [KeyPair] from the given [RSAPrivateCrtKey] by extracting
+     * modulus and publicExponent and constructing the matching [RSAPublicKey]
+     * using the BouncyCastle-backed [KeyFactory].
+     */
+    fun deriveKeyPair(privateKey: RSAPrivateCrtKey): KeyPair {
+        val pubSpec = RSAPublicKeySpec(privateKey.modulus, privateKey.publicExponent)
+        val pubKey = CryptoProviders.rsaKeyFactory().generatePublic(pubSpec) as RSAPublicKey
+        return KeyPair(pubKey, privateKey)
+    }
+
+    private fun isPkcs1Der(bytes: ByteArray): Boolean {
+        return try {
+            if (bytes.size < 4 || bytes[0] != 0x30.toByte()) return false
+            val buf = java.nio.ByteBuffer.wrap(bytes)
+            buf.get() // 0x30
+            readDerLength(buf)
+            if (buf.remaining() < 3) return false
+            if (buf.get() != 0x02.toByte()) return false // Version tag 0x02
+            val versionLen = readDerLength(buf)
+            if (buf.remaining() < versionLen + 1) return false
+            buf.position(buf.position() + versionLen)
+            buf.hasRemaining() && buf.get() == 0x02.toByte() // Modulus tag 0x02
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun parsePkcs1PrivateKey(
+        der: ByteArray,
+        kf: KeyFactory,
+    ): RSAPrivateCrtKey {
+        val buffer = java.nio.ByteBuffer.wrap(der)
+        require(buffer.get() == 0x30.toByte()) { "Invalid DER sequence" }
+        readDerLength(buffer)
+
+        readDerInteger(buffer) // Version
+
+        val modulus = readDerInteger(buffer)
+        val publicExponent = readDerInteger(buffer)
+        val privateExponent = readDerInteger(buffer)
+        val prime1 = readDerInteger(buffer)
+        val prime2 = readDerInteger(buffer)
+        val exponent1 = readDerInteger(buffer)
+        val exponent2 = readDerInteger(buffer)
+        val coefficient = readDerInteger(buffer)
+
+        val spec =
+            RSAPrivateCrtKeySpec(
+                modulus,
+                publicExponent,
+                privateExponent,
+                prime1,
+                prime2,
+                exponent1,
+                exponent2,
+                coefficient,
+            )
+        return kf.generatePrivate(spec) as RSAPrivateCrtKey
+    }
+
+    private fun readDerLength(buf: java.nio.ByteBuffer): Int {
+        var len = buf.get().toInt() and 0xFF
+        if ((len and 0x80) != 0) {
+            val count = len and 0x7F
+            require(count != 0) { "Indefinite-length DER encoding is not valid here" }
+            len = 0
+            for (i in 0 until count) {
+                len = (len shl 8) or (buf.get().toInt() and 0xFF)
+            }
+        }
+        return len
+    }
+
+    private fun readDerInteger(buf: java.nio.ByteBuffer): BigInteger {
+        require(buf.get() == 0x02.toByte()) { "Expected DER Integer tag 0x02" }
+        val len = readDerLength(buf)
+        val bytes = ByteArray(len)
+        buf.get(bytes)
+        return BigInteger(bytes)
     }
 
     /** Signs the 20 byte SHA1 token adbd sends during AUTH. */
