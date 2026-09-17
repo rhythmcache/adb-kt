@@ -7,14 +7,12 @@ import org.bouncycastle.cert.X509v3CertificateBuilder
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
 import org.bouncycastle.cert.jcajce.JcaX509ExtensionUtils
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
-import org.bouncycastle.jce.provider.BouncyCastleProvider
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.bouncycastle.util.io.pem.PemObject
 import org.bouncycastle.util.io.pem.PemWriter
 import java.io.StringWriter
 import java.math.BigInteger
 import java.security.KeyPair
-import java.security.Security
 import java.security.cert.X509Certificate
 import java.util.Date
 import javax.security.auth.x500.X500Principal
@@ -28,11 +26,6 @@ import javax.security.auth.x500.X500Principal
  */
 object X509Generator {
     private const val CERT_LIFETIME_SECONDS = 10L * 365 * 24 * 60 * 60
-
-    init {
-        Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
-        Security.insertProviderAt(BouncyCastleProvider(), 1)
-    }
 
     /** Generates a self-signed X.509 certificate for [keyPair]. */
     fun generate(keyPair: KeyPair): X509Certificate {
@@ -69,12 +62,12 @@ object X509Generator {
 
         val signer =
             JcaContentSignerBuilder("SHA256withRSA")
-                .setProvider(BouncyCastleProvider.PROVIDER_NAME)
+                .setProvider(CryptoProviders.provider)
                 .build(keyPair.private)
 
         val holder = builder.build(signer)
         return JcaX509CertificateConverter()
-            .setProvider(BouncyCastleProvider.PROVIDER_NAME)
+            .setProvider(CryptoProviders.provider)
             .getCertificate(holder)
     }
 
