@@ -86,9 +86,41 @@ class AdbForward internal constructor(
                 throw AdbException.RemoteFailure("cannot rebind existing socket for $local")
             }
 
-            // In TCP socket programming, to rebind to an existing specific port, the previous ServerSocket
-            // must be closed first so the OS frees the port address; otherwise ServerSocket will throw
-            // java.net.BindException: Address already in use.
+            // Case A: Seamless in-place rebind on the same non-zero port.
+            // If the existing ServerSocket is healthy, we reuse it rather than destroying it.
+            // This prevents port theft by another process and eliminates any downtime/BindException.
+            if (existing != null && requestedPort > 0 && !existing.serverSocket.isClosed) {
+                existing.acceptJob.cancel()
+                val newRule = ForwardRule(local = requestedKey, remote = remote, boundPort = requestedPort)
+                val newAcceptJob = scope.launch {
+                    try {
+                        while (isActive && !existing.serverSocket.isClosed) {
+                            val clientSocket = try {
+                                withContext(Dispatchers.IO) { existing.serverSocket.accept() }
+                            } catch (e: Exception) {
+                                if (isActive) {
+                                    AdbLog.w("AdbForward", "accept() failed on $requestedKey: ${e.message}")
+                                }
+                                break
+                            }
+                            launch {
+                                bridgeClientSocket(clientSocket, remote)
+                            }
+                        }
+                    } finally {
+                        withContext(Dispatchers.IO) {
+                            runCatching { existing.serverSocket.close() }
+                        }
+                    }
+                }
+                val mapping = ActiveForwardMapping(newRule, existing.serverSocket, newAcceptJob)
+                activeForwards[requestedKey] = mapping
+                AdbLog.i("AdbForward", "Seamlessly rebound $requestedKey to $remote")
+                return
+            }
+
+            // Case B: Fresh bind or replacing an un-reusable socket.
+            // If an old socket was on this port, release it first so the OS frees the port address.
             if (existing != null) {
                 existing.acceptJob.cancel()
                 withContext(Dispatchers.IO) {
