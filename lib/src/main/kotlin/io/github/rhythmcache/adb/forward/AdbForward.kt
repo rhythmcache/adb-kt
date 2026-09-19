@@ -48,7 +48,6 @@ class AdbForward internal constructor(
         @Volatile var rule: ForwardRule,
         val serverSocket: ServerSocket,
         val acceptJob: Job,
-        @Volatile var currentRemote: String,
     )
 
     private fun parseLocalPort(local: String): Int {
@@ -93,10 +92,9 @@ class AdbForward internal constructor(
 
             // Case A: Seamless in-place rebind on the same non-zero port.
             // We do NOT cancel the accept loop or destroy the ServerSocket!
-            // Updating the volatile currentRemote atomically redirects all subsequent connections
-            // to the new target without any socket re-creation, competing accept loops, or finally-close races.
+            // Atomically swapping the immutable ForwardRule reference updates both routing and reporting
+            // instantaneously without any socket re-creation, competing accept loops, or finally-close races.
             if (existing != null && requestedPort > 0 && !existing.serverSocket.isClosed) {
-                existing.currentRemote = remote
                 existing.rule = ForwardRule(local = requestedKey, remote = remote, boundPort = requestedPort)
                 AdbLog.i("AdbForward", "Seamlessly updated forward target in-place for $requestedKey -> $remote")
                 return
@@ -136,7 +134,8 @@ class AdbForward internal constructor(
                             }
                             break
                         }
-                        val targetRemote = mapping.currentRemote
+                        // Atomically read the target remote from the volatile immutable ForwardRule
+                        val targetRemote = mapping.rule.remote
                         launch {
                             bridgeClientSocket(clientSocket, targetRemote)
                         }
@@ -152,7 +151,6 @@ class AdbForward internal constructor(
                 rule = rule,
                 serverSocket = serverSocket,
                 acceptJob = acceptJob,
-                currentRemote = remote,
             )
 
             activeForwards[boundKey] = mapping
