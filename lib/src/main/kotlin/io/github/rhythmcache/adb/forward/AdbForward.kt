@@ -45,9 +45,10 @@ class AdbForward internal constructor(
     private val activeForwards = mutableMapOf<String, ActiveForwardMapping>()
 
     private class ActiveForwardMapping(
-        val rule: ForwardRule,
+        @Volatile var rule: ForwardRule,
         val serverSocket: ServerSocket,
         val acceptJob: Job,
+        @Volatile var currentRemote: String,
     )
 
     private fun parseLocalPort(local: String): Int {
@@ -65,6 +66,10 @@ class AdbForward internal constructor(
 
     /**
      * Binds a local TCP port on the host and forwards incoming connections to [remote] on the target device.
+     *
+     * If the requested local port is already bound by an existing forward mapping and [noRebind] is false,
+     * the existing [ServerSocket] and accept loop are kept alive and the forwarding destination is atomically
+     * updated in-place. This guarantees zero downtime and completely avoids port collisions or bind races.
      *
      * @param local The local endpoint specification (e.g. "tcp:8080" or "tcp:0" for dynamic allocation).
      * @param remote The remote endpoint specification on the target device (e.g. "tcp:8080" or "localabstract:scrcpy").
@@ -87,40 +92,17 @@ class AdbForward internal constructor(
             }
 
             // Case A: Seamless in-place rebind on the same non-zero port.
-            // If the existing ServerSocket is healthy, we reuse it rather than destroying it.
-            // This prevents port theft by another process and eliminates any downtime/BindException.
+            // We do NOT cancel the accept loop or destroy the ServerSocket!
+            // Updating the volatile currentRemote atomically redirects all subsequent connections
+            // to the new target without any socket re-creation, competing accept loops, or finally-close races.
             if (existing != null && requestedPort > 0 && !existing.serverSocket.isClosed) {
-                existing.acceptJob.cancel()
-                val newRule = ForwardRule(local = requestedKey, remote = remote, boundPort = requestedPort)
-                val newAcceptJob = scope.launch {
-                    try {
-                        while (isActive && !existing.serverSocket.isClosed) {
-                            val clientSocket = try {
-                                withContext(Dispatchers.IO) { existing.serverSocket.accept() }
-                            } catch (e: Exception) {
-                                if (isActive) {
-                                    AdbLog.w("AdbForward", "accept() failed on $requestedKey: ${e.message}")
-                                }
-                                break
-                            }
-                            launch {
-                                bridgeClientSocket(clientSocket, remote)
-                            }
-                        }
-                    } finally {
-                        withContext(Dispatchers.IO) {
-                            runCatching { existing.serverSocket.close() }
-                        }
-                    }
-                }
-                val mapping = ActiveForwardMapping(newRule, existing.serverSocket, newAcceptJob)
-                activeForwards[requestedKey] = mapping
-                AdbLog.i("AdbForward", "Seamlessly rebound $requestedKey to $remote")
+                existing.currentRemote = remote
+                existing.rule = ForwardRule(local = requestedKey, remote = remote, boundPort = requestedPort)
+                AdbLog.i("AdbForward", "Seamlessly updated forward target in-place for $requestedKey -> $remote")
                 return
             }
 
-            // Case B: Fresh bind or replacing an un-reusable socket.
-            // If an old socket was on this port, release it first so the OS frees the port address.
+            // Case B: Fresh bind or replacing an un-reusable/closed socket.
             if (existing != null) {
                 existing.acceptJob.cancel()
                 withContext(Dispatchers.IO) {
@@ -139,6 +121,9 @@ class AdbForward internal constructor(
 
             val boundPort = serverSocket.localPort
             val boundKey = "tcp:$boundPort"
+            val rule = ForwardRule(local = boundKey, remote = remote, boundPort = boundPort)
+
+            lateinit var mapping: ActiveForwardMapping
 
             val acceptJob = scope.launch {
                 try {
@@ -151,8 +136,9 @@ class AdbForward internal constructor(
                             }
                             break
                         }
+                        val targetRemote = mapping.currentRemote
                         launch {
-                            bridgeClientSocket(clientSocket, remote)
+                            bridgeClientSocket(clientSocket, targetRemote)
                         }
                     }
                 } finally {
@@ -162,8 +148,12 @@ class AdbForward internal constructor(
                 }
             }
 
-            val rule = ForwardRule(local = boundKey, remote = remote, boundPort = boundPort)
-            val mapping = ActiveForwardMapping(rule, serverSocket, acceptJob)
+            mapping = ActiveForwardMapping(
+                rule = rule,
+                serverSocket = serverSocket,
+                acceptJob = acceptJob,
+                currentRemote = remote,
+            )
 
             activeForwards[boundKey] = mapping
             if (requestedKey != boundKey) {
