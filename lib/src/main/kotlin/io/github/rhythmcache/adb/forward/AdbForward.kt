@@ -20,7 +20,7 @@ import java.net.Socket
 /**
  * Represents an active host-side port forward rule.
  *
- * @property local The local host endpoint spec, e.g. "tcp:8080".
+ * @property local The canonical local host endpoint spec, e.g. "tcp:8080".
  * @property remote The remote device endpoint spec, e.g. "tcp:8080" or "localabstract:scrcpy".
  * @property boundPort The actual bound local TCP port on the host.
  */
@@ -76,25 +76,35 @@ class AdbForward internal constructor(
         noRebind: Boolean = false,
     ) {
         val requestedPort = parseLocalPort(local)
+        // Canonical key used everywhere — never key by un-normalized strings
         val requestedKey = "tcp:$requestedPort"
 
         mutex.withLock {
-            if (noRebind && (activeForwards.containsKey(requestedKey) || activeForwards.containsKey(local))) {
+            val existing = activeForwards[requestedKey]
+
+            if (noRebind && existing != null) {
                 throw AdbException.RemoteFailure("cannot rebind existing socket for $local")
             }
 
-            // Unbind any existing forward on this port if rebind is allowed
-            val existing = activeForwards.remove(requestedKey) ?: activeForwards.remove(local)
-            existing?.let { old ->
-                old.acceptJob.cancel()
+            // In TCP socket programming, to rebind to an existing specific port, the previous ServerSocket
+            // must be closed first so the OS frees the port address; otherwise ServerSocket will throw
+            // java.net.BindException: Address already in use.
+            if (existing != null) {
+                existing.acceptJob.cancel()
                 withContext(Dispatchers.IO) {
-                    runCatching { old.serverSocket.close() }
+                    runCatching { existing.serverSocket.close() }
                 }
+                activeForwards.entries.removeAll { it.value === existing }
             }
 
-            val serverSocket = withContext(Dispatchers.IO) {
-                ServerSocket(requestedPort, 50, InetAddress.getByName("127.0.0.1"))
+            val serverSocket = try {
+                withContext(Dispatchers.IO) {
+                    ServerSocket(requestedPort, 50, InetAddress.getByName("127.0.0.1"))
+                }
+            } catch (e: Exception) {
+                throw AdbException.RemoteFailure("Failed to bind local port $requestedPort: ${e.message}")
             }
+
             val boundPort = serverSocket.localPort
             val boundKey = "tcp:$boundPort"
 
@@ -103,7 +113,10 @@ class AdbForward internal constructor(
                     while (isActive && !serverSocket.isClosed) {
                         val clientSocket = try {
                             withContext(Dispatchers.IO) { serverSocket.accept() }
-                        } catch (_: Exception) {
+                        } catch (e: Exception) {
+                            if (isActive) {
+                                AdbLog.w("AdbForward", "accept() failed on $boundKey: ${e.message}")
+                            }
                             break
                         }
                         launch {
@@ -119,6 +132,7 @@ class AdbForward internal constructor(
 
             val rule = ForwardRule(local = boundKey, remote = remote, boundPort = boundPort)
             val mapping = ActiveForwardMapping(rule, serverSocket, acceptJob)
+
             activeForwards[boundKey] = mapping
             if (requestedKey != boundKey) {
                 activeForwards[requestedKey] = mapping
@@ -143,7 +157,8 @@ class AdbForward internal constructor(
                 sock.tcpNoDelay = true
                 val adbStream = try {
                     connection.open(remote)
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    AdbLog.w("AdbForward", "Failed to open device stream for $remote: ${e.message}")
                     return
                 }
                 adbStream.use { stream ->
@@ -159,7 +174,8 @@ class AdbForward internal constructor(
                                     if (count < 0) break
                                     stream.write(buffer.copyOf(count))
                                 }
-                            } catch (_: Exception) {
+                            } catch (e: Exception) {
+                                AdbLog.d("AdbForward", "upstream closed for $remote: ${e.message}")
                             } finally {
                                 runCatching { stream.closeWrite() }
                                 done.complete(Unit)
@@ -174,7 +190,8 @@ class AdbForward internal constructor(
                                     outStream.write(chunk)
                                     outStream.flush()
                                 }
-                            } catch (_: Exception) {
+                            } catch (e: Exception) {
+                                AdbLog.d("AdbForward", "downstream closed for $remote: ${e.message}")
                             } finally {
                                 done.complete(Unit)
                             }
@@ -186,7 +203,8 @@ class AdbForward internal constructor(
                     }
                 }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            AdbLog.w("AdbForward", "bridgeClientSocket failed for $remote: ${e.message}")
         }
     }
 
@@ -197,7 +215,9 @@ class AdbForward internal constructor(
         val port = parseLocalPort(local)
         val key = "tcp:$port"
         val mapping = mutex.withLock {
-            activeForwards.remove(key) ?: activeForwards.remove(local)
+            activeForwards.remove(key)?.also { removed ->
+                activeForwards.entries.removeAll { it.value === removed }
+            }
         } ?: return
         mapping.acceptJob.cancel()
         withContext(Dispatchers.IO) {
@@ -233,7 +253,7 @@ class AdbForward internal constructor(
      * Returns a snapshot list of all currently active host forward rules.
      */
     suspend fun list(): List<ForwardRule> = mutex.withLock {
-        activeForwards.values.map { it.rule }.distinct()
+        activeForwards.values.toSet().map { it.rule }
     }
 
     /**
