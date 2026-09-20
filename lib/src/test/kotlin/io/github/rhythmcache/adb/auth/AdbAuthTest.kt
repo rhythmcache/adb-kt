@@ -42,7 +42,7 @@ class AdbAuthTest {
     }
 
     @Test
-    fun `FileKeyProvider generates PEM adbkey on disk and reads back`() = runBlocking {
+    fun `FileKeyProvider generates DER adbkey on disk and reads back`() = runBlocking {
         val testDir = tempFolder.newFolder("adb_keys")
         val keyFile = File(testDir, "adbkey")
         val pubKeyFile = File(testDir, "adbkey.pub")
@@ -51,8 +51,8 @@ class AdbAuthTest {
         val keyPair = provider.getKeyPair()
 
         assertTrue(keyFile.exists())
-        val savedText = keyFile.readText()
-        assertTrue("Saved adbkey should be in PEM format", savedText.startsWith("-----BEGIN PRIVATE KEY-----"))
+        val savedBytes = keyFile.readBytes()
+        assertEquals(0x30.toByte(), savedBytes[0]) // DER Sequence
         assertTrue(pubKeyFile.exists())
 
         // Read back from clean provider instance pointing to same file
@@ -62,6 +62,24 @@ class AdbAuthTest {
         assertEquals(
             (keyPair.public as RSAPublicKey).modulus,
             (keyPair2.public as RSAPublicKey).modulus,
+        )
+    }
+
+    @Test
+    fun `FileKeyProvider loads existing PEM adbkey from disk`() = runBlocking {
+        val testDir = tempFolder.newFolder("adb_pem_keys")
+        val keyFile = File(testDir, "adbkey")
+
+        val generated = AdbAuth.generateKey()
+        val pem = AdbAuth.privateKeyToPem(generated.private)
+        keyFile.writeText(pem)
+
+        val provider = FileKeyProvider(keyFile)
+        val loaded = provider.getKeyPair()
+
+        assertEquals(
+            (generated.public as RSAPublicKey).modulus,
+            (loaded.public as RSAPublicKey).modulus,
         )
     }
 }
