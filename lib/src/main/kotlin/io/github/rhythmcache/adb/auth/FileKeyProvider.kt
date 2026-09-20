@@ -60,7 +60,7 @@ class FileKeyProvider(
         val generated = AdbAuth.generateKey()
         try {
             keyFile.parentFile?.mkdirs()
-            keyFile.writeBytes(generated.private.encoded)
+            keyFile.writeText(AdbAuth.privateKeyToPem(generated.private))
             val pubBytes =
                 if (identityComment != null) {
                     AdbAuth.encodePublicKeyAdb(generated.public as RSAPublicKey, identityComment)

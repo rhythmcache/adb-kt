@@ -1,6 +1,7 @@
 package io.github.rhythmcache.adb
 
 import io.github.rhythmcache.adb.crypto.CryptoProviders
+import io.github.rhythmcache.adb.crypto.X509Generator
 import org.bouncycastle.asn1.pkcs.PrivateKeyInfo
 import org.bouncycastle.asn1.pkcs.RSAPrivateKey as Asn1RsaPrivateKey
 import java.math.BigInteger
@@ -137,6 +138,13 @@ object AdbAuth {
             }
         return KeyPair(pubKey, privateKey)
     }
+
+    /**
+     * Serializes an RSA private key to standard PKCS#8 PEM format (`-----BEGIN PRIVATE KEY-----`).
+     * This matches the format used by official Android SDK ADB (~/.android/adbkey).
+     */
+    fun privateKeyToPem(privateKey: PrivateKey): String =
+        X509Generator.privateKeyToPem(privateKey)
 
     private fun isPkcs1Der(bytes: ByteArray): Boolean {
         return try {
